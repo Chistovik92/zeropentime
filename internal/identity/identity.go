@@ -22,6 +22,8 @@ import (
 
 	"golang.org/x/crypto/blake2s"
 	"golang.org/x/crypto/curve25519"
+
+	"github.com/Chistovik92/zeropentime/internal/fsutil"
 )
 
 const (
@@ -60,14 +62,19 @@ func Load(path string) (*Identity, error) {
 	return &Identity{priv: ed25519.NewKeyFromSeed(seed)}, nil
 }
 
-// Save writes the identity to path, readable only by the current user.
-// It refuses to overwrite an existing file.
+// Save writes the identity to path, readable only by its owner, the
+// administrators and the system. It refuses to overwrite an existing file.
 func (id *Identity) Save(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := fsutil.SecureDir(filepath.Dir(path)); err != nil {
 		return err
 	}
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
+		return err
+	}
+	if err := fsutil.SecureFile(path); err != nil {
+		f.Close()
+		os.Remove(path)
 		return err
 	}
 	data := keyFilePrefix + base64.StdEncoding.EncodeToString(id.priv.Seed()) + "\n"

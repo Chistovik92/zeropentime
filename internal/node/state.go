@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Chistovik92/zeropentime/internal/fsutil"
 )
 
 // State is what "zpt join" records for the daemon: which controllers to
@@ -45,20 +47,14 @@ func LoadState(path string) (*State, error) {
 	return &s, nil
 }
 
-// Save writes the state atomically, readable only by the owner.
+// Save writes the state atomically, readable only by its owner, the
+// administrators and the system.
 func (s *State) Save(path string) error {
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return fsutil.WriteFile(path, b)
 }
 
 func normURL(u string) string { return strings.TrimRight(u, "/") }

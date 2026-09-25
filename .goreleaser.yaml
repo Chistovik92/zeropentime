@@ -6,13 +6,25 @@ project_name: zeropentime
 before:
   hooks:
     - go mod tidy -diff
+    - bash scripts/fetch-wintun.sh
 
 builds:
-  - id: zpt
+  # Узел собирается раздельно по ОС: в архив для Windows кладётся wintun.dll.
+  - id: zpt-linux
     main: ./cmd/zpt
     binary: zpt
     env: [CGO_ENABLED=0]
-    goos: [linux, windows]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.version={{ .Version }}"]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+  - id: zpt-windows
+    main: ./cmd/zpt
+    binary: zpt
+    env: [CGO_ENABLED=0]
+    goos: [windows]
     goarch: [amd64, arm64]
     flags: [-trimpath]
     ldflags: ["-s -w -X main.version={{ .Version }}"]
@@ -30,13 +42,10 @@ builds:
 
 archives:
   # Узел: MPL-2.0.
-  - id: zpt
-    ids: [zpt]
+  - id: zpt-linux
+    ids: [zpt-linux]
     name_template: "zpt_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats: [tar.gz]
-    format_overrides:
-      - goos: windows
-        formats: [zip]
     files:
       - LICENSE
       - LICENSING.md
@@ -44,6 +53,22 @@ archives:
       - README.md
       - CHANGELOG.md
       - deploy/examples/zpt.yaml
+
+  - id: zpt-windows
+    ids: [zpt-windows]
+    name_template: "zpt_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [zip]
+    files:
+      - LICENSE
+      - LICENSING.md
+      - TRADEMARKS.md
+      - README.md
+      - CHANGELOG.md
+      - deploy/examples/zpt.yaml
+      - src: "third_party/wintun/bin/{{ .Arch }}/wintun.dll"
+        dst: wintun.dll
+      - src: third_party/wintun/LICENSE.txt
+        dst: wintun-LICENSE.txt
 
   # Контроллер: AGPL-3.0.
   - id: zpt-controller
@@ -72,7 +97,7 @@ release:
   github:
     owner: Chistovik92
     name: zeropentime
-  # Релиз создаётся черновиком: мейнтейнер проверяет и публикует вручную.
+  # Релиз создаётся черновиком и публикуется после проверки архивов.
   draft: true
   prerelease: auto
   name_template: "zeropentime {{ .Version }}"

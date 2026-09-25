@@ -4,6 +4,7 @@ package room
 
 import (
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"os/exec"
 	"strconv"
@@ -11,7 +12,7 @@ import (
 	"github.com/amnezia-vpn/amneziawg-go/tun"
 )
 
-func configureInterface(_ tun.Device, name string, addr netip.Prefix, mtu int) error {
+func configureInterface(_ tun.Device, name string, addr netip.Prefix, mtu int, _ *slog.Logger) error {
 	cmds := [][]string{
 		{"ip", "address", "add", addr.String(), "dev", name},
 		{"ip", "link", "set", "dev", name, "mtu", strconv.Itoa(mtu), "up"},

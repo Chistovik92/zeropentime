@@ -30,7 +30,7 @@ jobs:
           path: ${{ runner.temp }}/zpt-e2e-*.log
           if-no-files-found: ignore
       - name: Заметки к релизу из CHANGELOG.md
-        run: scripts/release-notes.sh "${GITHUB_REF_NAME#v}" > "$RUNNER_TEMP/notes.md"
+        run: bash scripts/release-notes.sh "${GITHUB_REF_NAME#v}" > "$RUNNER_TEMP/notes.md"
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser

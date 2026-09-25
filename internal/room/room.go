@@ -88,7 +88,7 @@ func Up(o Options) (_ *Room, err error) {
 			tdev.Close()
 			return nil, err
 		}
-		if err := configureInterface(tdev, r.ifname, c.Address, c.MTU); err != nil {
+		if err := configureInterface(tdev, r.ifname, c.Address, c.MTU, log); err != nil {
 			tdev.Close()
 			return nil, fmt.Errorf("room %s: configure %s: %w", c.Name, r.ifname, err)
 		}

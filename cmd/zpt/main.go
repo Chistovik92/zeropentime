@@ -24,7 +24,7 @@ import (
 	"github.com/Chistovik92/zeropentime/internal/obfs"
 )
 
-var version = "0.1.2-dev"
+var version = "0.1.3-dev"
 
 const usage = `zpt — zeropentime: децентрализованные виртуальные LAN на AmneziaWG
 
@@ -276,6 +276,11 @@ func cmdUp(args []string) error {
 		return fmt.Errorf("нет ключа узла %s — выполните zpt keygen или zpt join", cfg.KeyPath())
 	} else if err != nil {
 		return err
+	}
+	if !cfg.Userspace {
+		if err := requireAdmin(); err != nil {
+			return err
+		}
 	}
 	log, err := newLogger(cfg.LogLevel)
 	if err != nil {
