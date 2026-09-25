@@ -12,6 +12,7 @@
 - Узел применяет изменения за доли секунды без разрыва соединений.
 - CLI узла `zpt`: `keygen`, `join`, `leave`, `up`, `pubkey`, `room new`; контроллер `zpt-controller`: `serve`, `useradd`, `passwd`.
 - Dockerfile и docker-compose с Caddy.
+- Сборка релизов через goreleaser (Windows/Linux, amd64/arm64, SHA-256), выпуск по тегу, процесс в RELEASING.md, политика безопасности в SECURITY.md.
 - Лицензии: узел и общие пакеты — MPL-2.0, контроллер — AGPL-3.0; SPDX-заголовки и проверка разделения в тестах; DCO для вклада.
 
 ### Изменено

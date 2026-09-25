@@ -1,0 +1,78 @@
+# Сборка релизов: goreleaser release --clean --release-notes notes.md
+# Проверка локально: goreleaser release --snapshot --clean
+version: 2
+project_name: zeropentime
+
+before:
+  hooks:
+    - go mod tidy -diff
+
+builds:
+  - id: zpt
+    main: ./cmd/zpt
+    binary: zpt
+    env: [CGO_ENABLED=0]
+    goos: [linux, windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.version={{ .Version }}"]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+  - id: zpt-controller
+    main: ./cmd/zpt-controller
+    binary: zpt-controller
+    env: [CGO_ENABLED=0]
+    goos: [linux, windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.version={{ .Version }}"]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  # Узел: MPL-2.0.
+  - id: zpt
+    ids: [zpt]
+    name_template: "zpt_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - LICENSING.md
+      - TRADEMARKS.md
+      - README.md
+      - CHANGELOG.md
+      - deploy/examples/zpt.yaml
+
+  # Контроллер: AGPL-3.0.
+  - id: zpt-controller
+    ids: [zpt-controller]
+    name_template: "zpt-controller_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE.AGPL
+      - LICENSING.md
+      - TRADEMARKS.md
+      - README.md
+      - CHANGELOG.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# Заметки к релизу берутся из CHANGELOG.md (scripts/release-notes.sh).
+changelog:
+  disable: true
+
+release:
+  github:
+    owner: Chistovik92
+    name: zeropentime
+  # Релиз создаётся черновиком: мейнтейнер проверяет и публикует вручную.
+  draft: true
+  prerelease: auto
+  name_template: "zeropentime {{ .Version }}"
