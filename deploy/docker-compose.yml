@@ -1,25 +1,31 @@
 # Контроллер за обратным прокси Caddy с автоматическим HTTPS.
-# 1. Укажите свой домен в ZPT_DOMAIN (DNS должен указывать на этот сервер).
-# 2. docker compose up -d
-# 3. docker compose exec controller zpt-controller useradd -db /data/controller.db -login admin -admin
+# 1. Укажите свой домен: export ZPT_DOMAIN=zpt.example.org (DNS должен указывать на этот сервер).
+# 2. docker compose -f deploy/docker-compose.yml up -d
+# 3. docker compose -f deploy/docker-compose.yml exec controller zpt-controller useradd -db /data/controller.db -login admin -admin
+#
+# Образ берётся из GitHub Container Registry; чтобы собрать из исходников,
+# добавьте --build (используется deploy/Dockerfile).
 services:
   controller:
+    image: ghcr.io/chistovik92/zeropentime-controller:${ZPT_VERSION:-latest}
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    command: ["serve", "-db", "/data/controller.db", "-listen", ":8080", "-url", "https://${ZPT_DOMAIN}", "-trust-proxy"]
+    command: ["serve", "-db", "/data/controller.db", "-listen", ":8080", "-url", "https://${ZPT_DOMAIN:?укажите ZPT_DOMAIN}", "-trust-proxy"]
     volumes:
       - zpt-data:/data
     restart: unless-stopped
 
   caddy:
     image: caddy:2
-    command: caddy reverse-proxy --from ${ZPT_DOMAIN} --to controller:8080
+    command: caddy reverse-proxy --from ${ZPT_DOMAIN:?укажите ZPT_DOMAIN} --to controller:8080
     ports:
       - "80:80"
       - "443:443"
     volumes:
       - caddy-data:/data
+    depends_on:
+      - controller
     restart: unless-stopped
 
 volumes:

@@ -1,0 +1,9 @@
+.git
+.github
+.claude
+dist
+third_party
+*.db
+*.db-*
+*.key
+state.json

@@ -36,6 +36,21 @@ zpt-controller serve -db controller.db -listen :8080 -url https://zpt.example.or
 
 Забыли пароль: `zpt-controller passwd -db controller.db -login admin`.
 
+### В Docker
+
+Готовый образ (linux/amd64, linux/arm64): `ghcr.io/chistovik92/zeropentime-controller`.
+
+```bash
+docker run -d --name zpt -p 8080:8080 -v zpt-data:/data ghcr.io/chistovik92/zeropentime-controller serve -db /data/controller.db -listen :8080 -url https://zpt.example.org
+docker exec zpt zpt-controller useradd -db /data/controller.db -login admin -admin
+```
+
+С автоматическим HTTPS через Caddy — [deploy/docker-compose.yml](deploy/docker-compose.yml):
+
+```bash
+ZPT_DOMAIN=zpt.example.org docker compose -f deploy/docker-compose.yml up -d
+```
+
 ## Узел: вступить в комнату
 
 ```bash

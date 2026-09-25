@@ -4,6 +4,14 @@
 
 ## [Не выпущено]
 
+### Добавлено
+- Образ контроллера в GitHub Container Registry (`ghcr.io/chistovik92/zeropentime-controller`, linux/amd64 и linux/arm64), публикуется при каждом релизе.
+- Dockerfile: кросс-компиляция, версия в бинарнике, HEALTHCHECK, лицензия внутри образа.
+- CI проверяет образ (запуск, `/healthz`, создание администратора, страница входа) и docker-compose с Caddy (HTTPS для localhost).
+
+### Изменено
+- docker-compose по умолчанию берёт готовый образ; сборка из исходников — с `--build`.
+
 ## [0.1.2] — 2026-09-26
 
 Windows без ручной настройки.
