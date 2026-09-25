@@ -27,9 +27,19 @@
 
 | Архив | Содержимое | Лицензия |
 |---|---|---|
-| `zpt_X.Y.Z_{linux,windows}_{amd64,arm64}` | узел `zpt`, пример конфига | MPL-2.0 (`LICENSE`) |
+| `zpt_X.Y.Z_{linux,windows}_{amd64,arm64}` | узел `zpt`, пример конфига; для Windows — `wintun.dll` и её лицензия | MPL-2.0 (`LICENSE`); Wintun — своя лицензия (`wintun-LICENSE.txt`) |
 | `zpt-controller_X.Y.Z_{linux,windows}_{amd64,arm64}` | контроллер с админ-панелью | AGPL-3.0 (`LICENSE.AGPL`) |
 | `checksums.txt` | SHA-256 всех архивов | — |
+
+## Если сломался сам workflow
+
+Если тесты прошли, а упал шаг сборки или публикации (ошибка в workflow, а не в коде), номер версии не сжигается: соберите релиз из того же тега локально и исправьте workflow отдельным коммитом.
+
+```bash
+git worktree add /tmp/rel vX.Y.Z && cd /tmp/rel
+bash scripts/release-notes.sh X.Y.Z > /tmp/notes.md
+GITHUB_TOKEN=$(gh auth token) go run github.com/goreleaser/goreleaser/v2@v2.18.2 release --clean --release-notes /tmp/notes.md
+```
 
 ## Срочный релиз
 
