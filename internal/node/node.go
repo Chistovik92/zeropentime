@@ -14,9 +14,11 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Chistovik92/zeropentime/internal/api"
@@ -24,7 +26,9 @@ import (
 	"github.com/Chistovik92/zeropentime/internal/config"
 	"github.com/Chistovik92/zeropentime/internal/identity"
 	"github.com/Chistovik92/zeropentime/internal/magicsock"
+	"github.com/Chistovik92/zeropentime/internal/netcheck"
 	"github.com/Chistovik92/zeropentime/internal/pki"
+	"github.com/Chistovik92/zeropentime/internal/portmap"
 	"github.com/Chistovik92/zeropentime/internal/room"
 )
 
@@ -33,6 +37,8 @@ const (
 	PeerKeepalive = 25
 	// stateCheckEvery is how often the daemon notices new "zpt join"s.
 	stateCheckEvery = time.Second
+	// netcheckEvery is how often the node re-checks its external address.
+	netcheckEvery = time.Minute
 )
 
 // Options configure Start.
@@ -45,6 +51,8 @@ type Options struct {
 	Version   string
 	// LocalEndpoints overrides discovery of local addresses (tests).
 	LocalEndpoints func(port uint16, exclude []netip.Prefix) []netip.AddrPort
+	// LocalAddrs overrides the list of this machine's IPs used by netcheck (tests).
+	LocalAddrs func() []netip.Addr
 }
 
 // Node is a running daemon.
@@ -59,6 +67,9 @@ type Node struct {
 	versions map[string]int64       // highest accepted config version per room
 	pending  map[string]string      // last reported non-active status per room
 	last     map[string]*api.NetMap // last netmap per controller
+	reports  map[string]netcheck.Report
+	portMap  netip.AddrPort
+	changed  chan struct{} // closed and replaced when our reachability changes
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -76,6 +87,9 @@ func Start(o Options) (_ *Node, err error) {
 	if o.LocalEndpoints == nil {
 		o.LocalEndpoints = discoverLocal
 	}
+	if o.LocalAddrs == nil {
+		o.LocalAddrs = netcheck.LocalAddrs
+	}
 	sock, err := magicsock.Listen(o.Config.Port(), o.Log)
 	if err != nil {
 		return nil, err
@@ -84,6 +98,7 @@ func Start(o Options) (_ *Node, err error) {
 	n := &Node{
 		ID: o.Identity, opts: o, log: o.Log, sock: sock, cancel: cancel,
 		rooms: map[string]*running{}, versions: map[string]int64{}, pending: map[string]string{}, last: map[string]*api.NetMap{},
+		reports: map[string]netcheck.Report{}, changed: make(chan struct{}),
 	}
 	defer func() {
 		if err != nil {
@@ -104,7 +119,34 @@ func Start(o Options) (_ *Node, err error) {
 		n.wg.Add(1)
 		go n.supervise(ctx)
 	}
+	if !o.Config.Userspace && o.Config.PortMapEnabled() {
+		n.wg.Add(1)
+		go func() {
+			defer n.wg.Done()
+			portmap.Run(ctx, sock.Port(), n.log, func(ext netip.AddrPort) {
+				n.mu.Lock()
+				n.portMap = ext
+				n.mu.Unlock()
+				n.notifyChanged()
+			})
+		}()
+	}
 	return n, nil
+}
+
+// notifyChanged wakes the syncers so the controller learns our new
+// reachability at once instead of at the end of the current long poll.
+func (n *Node) notifyChanged() {
+	n.mu.Lock()
+	close(n.changed)
+	n.changed = make(chan struct{})
+	n.mu.Unlock()
+}
+
+func (n *Node) changedCh() <-chan struct{} {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.changed
 }
 
 // Port is the UDP port all rooms share.
@@ -250,11 +292,28 @@ func (n *Node) sync(ctx context.Context, url string) {
 	cl := client.New(url, n.ID, n.opts.Version)
 	var since int64
 	backoff := time.Second
+	stunServers := make(chan []string, 1)
+	go n.netcheckLoop(ctx, url, stunServers)
 	for ctx.Err() == nil {
-		nm, err := cl.Poll(ctx, since, n.endpoints())
+		pctx, cancel := context.WithCancel(ctx)
+		var woken atomic.Bool
+		changed := n.changedCh()
+		go func() {
+			select {
+			case <-changed:
+				woken.Store(true)
+				cancel()
+			case <-pctx.Done():
+			}
+		}()
+		nm, err := cl.Poll(pctx, since, n.endpoints(url))
+		cancel()
 		if err != nil {
 			if ctx.Err() != nil {
 				return
+			}
+			if woken.Load() {
+				continue // our address changed: report it right away
 			}
 			log.Warn("controller unreachable, rooms keep running", "err", err, "retry_in", backoff)
 			select {
@@ -267,18 +326,65 @@ func (n *Node) sync(ctx context.Context, url string) {
 		}
 		backoff = time.Second
 		since = nm.Version
+		select {
+		case <-stunServers:
+		default:
+		}
+		stunServers <- nm.STUN
 		n.apply(url, nm)
 	}
 }
 
-func (n *Node) endpoints() api.Endpoints {
+// netcheckLoop re-checks the external address with the controller's STUN
+// servers every netcheckEvery and whenever the server list changes.
+func (n *Node) netcheckLoop(ctx context.Context, url string, servers <-chan []string) {
+	var current []string
+	timer := time.NewTimer(time.Hour)
+	timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case s := <-servers:
+			if slices.Equal(s, current) {
+				continue
+			}
+			current = s
+		case <-timer.C:
+		}
+		if len(current) == 0 {
+			continue
+		}
+		addrs := netcheck.Resolve(ctx, current)
+		r := netcheck.Check(ctx, n.sock, addrs, n.sock.Port(), n.opts.LocalAddrs())
+		n.mu.Lock()
+		old := n.reports[url]
+		n.reports[url] = r
+		n.mu.Unlock()
+		if old.NAT != r.NAT || !slices.Equal(old.Mapped, r.Mapped) {
+			n.log.Info("external address checked", "controller", url, "nat", r.NAT, "mapped", r.Mapped)
+			n.notifyChanged()
+		}
+		timer.Reset(netcheckEvery)
+	}
+}
+
+func (n *Node) endpoints(url string) api.Endpoints {
 	n.mu.Lock()
 	var exclude []netip.Prefix
 	for _, r := range n.rooms {
 		exclude = append(exclude, r.cfg.Address.Masked())
 	}
+	rep := n.reports[url]
+	pm := n.portMap
 	n.mu.Unlock()
-	return api.Endpoints{UDPPort: n.sock.Port(), Locals: n.opts.LocalEndpoints(n.sock.Port(), exclude)}
+	return api.Endpoints{
+		UDPPort:   n.sock.Port(),
+		Locals:    n.opts.LocalEndpoints(n.sock.Port(), exclude),
+		Reflexive: rep.Mapped,
+		NAT:       rep.NAT,
+		PortMap:   pm,
+	}
 }
 
 // apply brings the rooms of one controller in line with its netmap.
@@ -393,8 +499,10 @@ func (n *Node) roomFromConfig(url, keyStr string, rs api.RoomState, nm *api.NetM
 	return rc, nil
 }
 
-// chooseEndpoint picks how to reach a peer: its LAN address when we are
-// behind the same public IP and share a subnet, else its public address.
+// chooseEndpoint picks how to reach a peer, best first: its LAN address
+// when we are behind the same public IP and share a subnet; the port its
+// router forwards; its address as seen by STUN; its public IP with the
+// local port (right only when there is no port translation).
 func chooseEndpoint(p api.Peer, myPublic netip.Addr, myPrefixes []netip.Prefix) string {
 	if p.PublicIP.IsValid() && p.PublicIP == myPublic {
 		for _, l := range p.Locals {
@@ -404,6 +512,12 @@ func chooseEndpoint(p api.Peer, myPublic netip.Addr, myPrefixes []netip.Prefix) 
 				}
 			}
 		}
+	}
+	if p.PortMap.IsValid() {
+		return p.PortMap.String()
+	}
+	if len(p.Reflexive) > 0 {
+		return p.Reflexive[0].String()
 	}
 	if p.PublicIP.IsValid() && p.UDPPort != 0 {
 		return netip.AddrPortFrom(p.PublicIP, p.UDPPort).String()

@@ -8,9 +8,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/Chistovik92/zeropentime/internal/api"
+	"github.com/Chistovik92/zeropentime/internal/stun"
 )
 
 // Config configures the HTTP server.
@@ -23,6 +25,12 @@ type Config struct {
 	TLSKey    string
 	// TrustProxy honours X-Forwarded-For/-Proto from private addresses.
 	TrustProxy bool
+	// STUNListen are UDP addresses of the built-in STUN server (two ports
+	// let nodes detect symmetric NAT). Empty: no STUN server.
+	STUNListen []string
+	// STUNPublic are the STUN addresses given to nodes ("host:port"). Empty:
+	// the host of PublicURL (or of the request) with the STUNListen ports.
+	STUNPublic []string
 }
 
 // Server is the controller HTTP server: node API and admin panel.
@@ -54,6 +62,27 @@ func (h *Server) Handler() http.Handler {
 	return mux
 }
 
+// stunServers returns the STUN addresses nodes should use.
+func (h *Server) stunServers(r *http.Request) []string {
+	if len(h.cfg.STUNPublic) > 0 {
+		return h.cfg.STUNPublic
+	}
+	host := r.Host
+	if u, err := url.Parse(h.cfg.PublicURL); err == nil && u.Host != "" {
+		host = u.Host
+	}
+	if hh, _, err := net.SplitHostPort(host); err == nil {
+		host = hh
+	}
+	var out []string
+	for _, l := range h.cfg.STUNListen {
+		if _, port, err := net.SplitHostPort(l); err == nil {
+			out = append(out, net.JoinHostPort(host, port))
+		}
+	}
+	return out
+}
+
 // Serve runs the server until ctx is cancelled.
 func (h *Server) Serve(ctx context.Context) error {
 	ln, err := net.Listen("tcp", h.cfg.Listen)
@@ -65,6 +94,19 @@ func (h *Server) Serve(ctx context.Context) error {
 
 // ServeListener runs the server on an existing listener.
 func (h *Server) ServeListener(ctx context.Context, ln net.Listener) error {
+	if len(h.cfg.STUNListen) > 0 {
+		sctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		errc := make(chan error, 1)
+		go func() { errc <- stun.Serve(sctx, h.cfg.STUNListen, h.log) }()
+		select {
+		case err := <-errc:
+			if err != nil {
+				return err
+			}
+		case <-time.After(100 * time.Millisecond): // listening
+		}
+	}
 	srv := &http.Server{
 		Handler:           h.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,

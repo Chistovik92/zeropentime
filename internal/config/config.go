@@ -45,7 +45,10 @@ type Config struct {
 	Userspace bool `yaml:"userspace"`
 	// LogLevel is one of debug, info, warn, error.
 	LogLevel string `yaml:"log_level"`
-	Rooms    []Room `yaml:"rooms"`
+	// PortMap asks the router to forward the UDP port (UPnP / NAT-PMP).
+	// Default: on.
+	PortMap *bool  `yaml:"portmap"`
+	Rooms   []Room `yaml:"rooms"`
 }
 
 // Room is one virtual LAN this node is a member of.
@@ -128,6 +131,9 @@ func Load(path string) (*Config, error) {
 	}
 	return &c, nil
 }
+
+// PortMapEnabled reports whether router port mapping is allowed.
+func (c *Config) PortMapEnabled() bool { return c.PortMap == nil || *c.PortMap }
 
 // Port returns the UDP listen port.
 func (c *Config) Port() int {

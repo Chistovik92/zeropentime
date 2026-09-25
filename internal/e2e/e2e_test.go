@@ -27,6 +27,7 @@ import (
 	"github.com/Chistovik92/zeropentime/internal/identity"
 	"github.com/Chistovik92/zeropentime/internal/node"
 	"github.com/Chistovik92/zeropentime/internal/store"
+	"github.com/Chistovik92/zeropentime/internal/stun"
 )
 
 var quiet = slog.New(slog.DiscardHandler)
@@ -75,7 +76,21 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := controller.NewServer(controller.Config{}, svc, quiet)
+	// A real STUN server on two loopback ports, like zpt-controller runs.
+	var stunAddrs []string
+	for range 2 {
+		c, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		stunAddrs = append(stunAddrs, c.LocalAddr().String())
+		c.Close()
+	}
+	sctx, stopSTUN := context.WithCancel(context.Background())
+	t.Cleanup(stopSTUN)
+	go stun.Serve(sctx, stunAddrs, quiet)
+
+	srv, err := controller.NewServer(controller.Config{STUNListen: stunAddrs}, svc, quiet)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,4 +398,41 @@ func TestPinAfterNetmapArrived(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, 5*time.Second, "room starts after pinning", hasRoom(a, "late", 0))
+}
+
+// 0.2.0: nodes learn their external address through the controller's STUN
+// server, report it, and peers dial exactly that address.
+func TestExternalAddressReported(t *testing.T) {
+	e := newEnv(t)
+	room := e.room("game", "auto")
+	a, b := e.node("a"), e.node("b")
+	e.mustJoin(a, e.invite(room.ID, 0, false), "alice", "active")
+	e.mustJoin(b, e.invite(room.ID, 0, false), "bob", "active")
+
+	eventually(t, 15*time.Second, "both nodes report NAT and address", func() error {
+		v, err := e.svc.Room(context.Background(), e.admin, room.ID)
+		if err != nil {
+			return err
+		}
+		for _, m := range v.Members {
+			if m.NAT != "none" || len(m.Reflexive) != 1 || m.Reflexive[0].Addr() != netip.MustParseAddr("127.0.0.1") {
+				return fmt.Errorf("%s: nat=%q reflexive=%v", m.Name, m.NAT, m.Reflexive)
+			}
+		}
+		return nil
+	})
+	eventually(t, 10*time.Second, "peer endpoint is the STUN-reported address", func() error {
+		r, err := a.node.Room("game")
+		if err != nil {
+			return err
+		}
+		stats, _ := r.Stats()
+		want := fmt.Sprintf("endpoint=127.0.0.1:%d", b.node.Port())
+		if !bytes.Contains([]byte(stats), []byte(want)) {
+			return fmt.Errorf("no %s in\n%s", want, stats)
+		}
+		return nil
+	})
+	srv := serveEcho(t, b, "game")
+	eventually(t, 10*time.Second, "traffic", func() error { return talk(a, "game", srv, 3*time.Second) })
 }

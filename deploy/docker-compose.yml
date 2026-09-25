@@ -12,6 +12,9 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
     command: ["serve", "-db", "/data/controller.db", "-listen", ":8080", "-url", "https://${ZPT_DOMAIN:?укажите ZPT_DOMAIN}", "-trust-proxy"]
+    ports:
+      - "3478:3478/udp"   # STUN: узлы узнают свой внешний адрес
+      - "3479:3479/udp"
     volumes:
       - zpt-data:/data
     restart: unless-stopped

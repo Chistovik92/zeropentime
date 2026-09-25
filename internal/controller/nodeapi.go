@@ -101,6 +101,7 @@ func (h *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 		apiError(w, err)
 		return
 	}
+	nm.STUN = h.stunServers(r)
 	sealed(w, nm, boxKey)
 }
 

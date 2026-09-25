@@ -19,11 +19,12 @@ import (
 	"github.com/Chistovik92/zeropentime/internal/store"
 )
 
-var version = "0.2.0-dev"
+var version = "0.2.1-dev"
 
 const usage = `zpt-controller — контроллер zeropentime (админ-панель + API для узлов)
 
   zpt-controller serve   -db ФАЙЛ [-listen :8080] [-url https://...] [-tls-cert Ф -tls-key Ф] [-trust-proxy]
+                         [-stun :3478,:3479] [-stun-public host:3478,host:3479]
   zpt-controller useradd -db ФАЙЛ -login ЛОГИН [-admin]
   zpt-controller passwd  -db ФАЙЛ -login ЛОГИН
   zpt-controller version
@@ -50,6 +51,8 @@ func run(sub string, args []string) error {
 		cert := fl.String("tls-cert", "", "TLS-сертификат (PEM)")
 		key := fl.String("tls-key", "", "TLS-ключ (PEM)")
 		trust := fl.Bool("trust-proxy", false, "доверять X-Forwarded-For/-Proto от обратного прокси")
+		stunListen := fl.String("stun", ":3478,:3479", "UDP-адреса встроенного STUN-сервера через запятую (два порта нужны для определения симметричного NAT); пусто — выключить")
+		stunPublic := fl.String("stun-public", "", "STUN-адреса для узлов (host:port через запятую); по умолчанию — хост из -url с портами из -stun")
 		level := fl.String("log-level", "info", "debug|info|warn|error")
 		fl.Parse(args)
 		var l slog.Level
@@ -64,6 +67,7 @@ func run(sub string, args []string) error {
 		defer closeDB()
 		srv, err := controller.NewServer(controller.Config{
 			Listen: *listen, PublicURL: strings.TrimRight(*pub, "/"), TLSCert: *cert, TLSKey: *key, TrustProxy: *trust,
+			STUNListen: splitList(*stunListen), STUNPublic: splitList(*stunPublic),
 		}, svc, log)
 		if err != nil {
 			return err
@@ -108,6 +112,16 @@ func run(sub string, args []string) error {
 		return nil
 	}
 	return errors.New("неизвестная команда " + sub + "\n\n" + usage)
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func openService(db string, log *slog.Logger) (*controller.Service, func(), error) {

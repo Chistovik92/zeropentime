@@ -428,6 +428,31 @@ func cleanName(name, fallback string) string {
 	return name
 }
 
+// knownNAT limits the NAT type to values the panel knows how to show.
+var knownNAT = map[string]bool{"": true, "none": true, "cone": true, "symmetric": true, "udp-blocked": true, "unknown": true}
+
+// reach turns what a node reports into what is stored, dropping anything
+// malformed or oversized (the node is authenticated, but not trusted to be
+// well-behaved).
+func reach(e api.Endpoints, remote netip.Addr, version string) store.Reach {
+	r := store.Reach{PublicIP: remote, UDPPort: e.UDPPort, Locals: cleanLocals(e), Version: version}
+	for _, a := range e.Reflexive {
+		if a.IsValid() && len(r.Reflexive) < 4 {
+			r.Reflexive = append(r.Reflexive, a)
+		}
+	}
+	if knownNAT[e.NAT] {
+		r.NAT = e.NAT
+	}
+	if e.PortMap.IsValid() {
+		r.PortMap = e.PortMap
+	}
+	if len(r.Version) > 32 {
+		r.Version = r.Version[:32]
+	}
+	return r
+}
+
 func cleanLocals(e api.Endpoints) []netip.AddrPort {
 	var out []netip.AddrPort
 	for _, a := range e.Locals {
@@ -457,7 +482,7 @@ func (s *Service) Join(ctx context.Context, nodeKey ed25519.PublicKey, req *api.
 		}); err != nil {
 			return err
 		}
-		if _, err := tx.UpdateNodeEndpoints(nodeID, remote, req.Endpoints.UDPPort, cleanLocals(req.Endpoints), req.ClientVersion); err != nil {
+		if _, err := tx.UpdateNodeEndpoints(nodeID, reach(req.Endpoints, remote, req.ClientVersion)); err != nil {
 			return err
 		}
 		if m, err := tx.Member(r.ID, nodeID); err == nil {
@@ -535,7 +560,7 @@ func (s *Service) Poll(ctx context.Context, nodeKey ed25519.PublicKey, req *api.
 			return ErrForbidden // unknown node: must join first
 		}
 		copy(boxKey[:], n.BoxKey)
-		changed, err = tx.UpdateNodeEndpoints(nodeID, remote, req.Endpoints.UDPPort, cleanLocals(req.Endpoints), req.ClientVersion)
+		changed, err = tx.UpdateNodeEndpoints(nodeID, reach(req.Endpoints, remote, req.ClientVersion))
 		return err
 	})
 	if err != nil {
@@ -595,6 +620,7 @@ func (s *Service) netMap(ctx context.Context, nodeID string) (*api.NetMap, error
 							}
 							nm.Peers[o.NodeID] = api.Peer{
 								PublicIP: n.PublicIP, UDPPort: n.UDPPort, Locals: n.Locals,
+								Reflexive: n.Reflexive, PortMap: n.PortMap, NAT: n.NAT,
 								Online: s.now().Sub(n.LastSeen) < OnlineWindow,
 							}
 						}

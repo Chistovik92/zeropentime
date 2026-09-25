@@ -61,6 +61,24 @@ var funcs = template.FuncMap{
 		}
 		return strconv.Itoa(n)
 	},
+	"nat": func(s string) string {
+		return map[string]string{
+			"none": "без NAT", "cone": "конусный NAT", "symmetric": "симметричный NAT",
+			"udp-blocked": "UDP закрыт", "unknown": "не определён",
+		}[s]
+	},
+	// reach is the address peers use first: port forward, STUN, or public IP.
+	"reach": func(m store.Member) string {
+		switch {
+		case m.PortMap.IsValid():
+			return m.PortMap.String() + " (проброс)"
+		case len(m.Reflexive) > 0:
+			return m.Reflexive[0].String()
+		case m.PublicIP.IsValid():
+			return m.PublicIP.String()
+		}
+		return ""
+	},
 	"status": func(s string) string {
 		return map[string]string{store.StatusActive: "активен", store.StatusPending: "ждёт одобрения", store.StatusBanned: "заблокирован"}[s]
 	},

@@ -23,7 +23,7 @@ COPY --from=build /out/zpt-controller /usr/local/bin/zpt-controller
 COPY LICENSE.AGPL LICENSING.md TRADEMARKS.md /usr/share/doc/zeropentime/
 USER zpt
 VOLUME /data
-EXPOSE 8080
+EXPOSE 8080 3478/udp 3479/udp
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s \
   CMD wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1
 LABEL org.opencontainers.image.title="zeropentime controller" \

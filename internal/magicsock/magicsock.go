@@ -13,9 +13,14 @@
 //
 // One socket means one NAT mapping between two nodes serves all the rooms they
 // share. Each room gets its own conn.Bind for its AmneziaWG device.
+//
+// The same socket also sends STUN requests, so the external address a STUN
+// server reports is exactly the one peers can use. STUN messages are told
+// apart by their magic cookie; a room tag can never look like one.
 package magicsock
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -23,10 +28,12 @@ import (
 	"net/netip"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/amnezia-vpn/amneziawg-go/conn"
 
 	"github.com/Chistovik92/zeropentime/internal/obfs"
+	"github.com/Chistovik92/zeropentime/internal/stun"
 )
 
 const (
@@ -46,6 +53,9 @@ type Conn struct {
 	mu    sync.Mutex
 	rooms atomic.Pointer[[]*roomBind] // copy-on-write list for the read loop
 
+	stunMu      sync.Mutex
+	stunPending map[stun.TxID]stunWait
+
 	closeOnce sync.Once
 	done      chan struct{}
 	wg        sync.WaitGroup
@@ -62,6 +72,8 @@ func Listen(port int, log *slog.Logger) (*Conn, error) {
 		port: uint16(pc.LocalAddr().(*net.UDPAddr).Port),
 		log:  log,
 		done: make(chan struct{}),
+
+		stunPending: map[stun.TxID]stunWait{},
 	}
 	c.rooms.Store(&[]*roomBind{})
 	c.wg.Add(1)
@@ -137,12 +149,72 @@ func (c *Conn) readLoop() {
 			continue
 		}
 		pkt := buf[:n]
+		if stun.Is(pkt) {
+			c.handleSTUN(pkt, netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port()))
+			continue
+		}
 		for _, b := range *c.rooms.Load() {
 			if b.tagger.Match(pkt) {
 				b.deliver(pkt[obfs.TagLen:], netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port()))
 				break
 			}
 		}
+	}
+}
+
+type stunWait struct {
+	server netip.AddrPort
+	reply  chan netip.AddrPort
+}
+
+// STUN asks a STUN server how it sees this socket. Requests are repeated
+// every 500 ms until an answer comes or ctx ends. Answers are accepted only
+// from the server the request went to and with the right transaction ID.
+func (c *Conn) STUN(ctx context.Context, server netip.AddrPort) (netip.AddrPort, error) {
+	server = netip.AddrPortFrom(server.Addr().Unmap(), server.Port())
+	id := stun.NewTxID()
+	w := stunWait{server: server, reply: make(chan netip.AddrPort, 1)}
+	c.stunMu.Lock()
+	c.stunPending[id] = w
+	c.stunMu.Unlock()
+	defer func() {
+		c.stunMu.Lock()
+		delete(c.stunPending, id)
+		c.stunMu.Unlock()
+	}()
+	req := stun.Request(id)
+	tick := time.NewTicker(500 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if _, err := c.pc.WriteToUDPAddrPort(req, server); err != nil {
+			return netip.AddrPort{}, err
+		}
+		select {
+		case mapped := <-w.reply:
+			return mapped, nil
+		case <-ctx.Done():
+			return netip.AddrPort{}, ctx.Err()
+		case <-c.done:
+			return netip.AddrPort{}, net.ErrClosed
+		case <-tick.C:
+		}
+	}
+}
+
+func (c *Conn) handleSTUN(pkt []byte, from netip.AddrPort) {
+	id, mapped, err := stun.ParseResponse(pkt)
+	if err != nil {
+		return
+	}
+	c.stunMu.Lock()
+	w, ok := c.stunPending[id]
+	c.stunMu.Unlock()
+	if !ok || w.server != from {
+		return
+	}
+	select {
+	case w.reply <- mapped:
+	default:
 	}
 }
 

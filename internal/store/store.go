@@ -40,7 +40,51 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
+}
+
+// migrations upgrade the base schema (schema.sql, version 1). Entry i
+// brings the database to version i+2. Never edit an entry once released.
+var migrations = []string{
+	// 2 (0.2.0): how nodes are seen from the internet.
+	`ALTER TABLE nodes ADD COLUMN nat_type  TEXT NOT NULL DEFAULT '';
+	 ALTER TABLE nodes ADD COLUMN reflexive TEXT NOT NULL DEFAULT 'null';
+	 ALTER TABLE nodes ADD COLUMN portmap   TEXT NOT NULL DEFAULT '';`,
+}
+
+// SchemaVersion is the version a fully migrated database has.
+var SchemaVersion = 1 + len(migrations)
+
+func migrate(db *sql.DB) error {
+	var v int
+	if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'schema'`).Scan(&v); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+	if v > SchemaVersion {
+		return fmt.Errorf("database schema %d is newer than this controller supports (%d): update zpt-controller", v, SchemaVersion)
+	}
+	for ; v < SchemaVersion; v++ {
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(migrations[v-1]); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("migrate schema to %d: %w", v+1, err)
+		}
+		if _, err := tx.Exec(`UPDATE meta SET value = ? WHERE key = 'schema'`, v+1); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Close closes the database.
@@ -210,6 +254,21 @@ type Node struct {
 	Version   string
 	LastSeen  time.Time
 	CreatedAt time.Time
+	// Reachability reported by the node (netcheck, port mapping).
+	NAT       string
+	Reflexive []netip.AddrPort
+	PortMap   netip.AddrPort
+}
+
+// Reach is what a node reports about how it can be reached.
+type Reach struct {
+	PublicIP  netip.Addr
+	UDPPort   uint16
+	Locals    []netip.AddrPort
+	Reflexive []netip.AddrPort
+	NAT       string
+	PortMap   netip.AddrPort
+	Version   string
 }
 
 func (t *Tx) UpsertNode(n *Node) error {
@@ -222,28 +281,34 @@ func (t *Tx) UpsertNode(n *Node) error {
 
 // UpdateNodeEndpoints records where the node can be reached. It reports
 // whether anything peers care about changed.
-func (t *Tx) UpdateNodeEndpoints(id string, public netip.Addr, port uint16, locals []netip.AddrPort, version string) (bool, error) {
+func (t *Tx) UpdateNodeEndpoints(id string, r Reach) (bool, error) {
 	n, err := t.NodeByID(id)
 	if err != nil {
 		return false, err
 	}
-	changed := n.PublicIP != public || n.UDPPort != port || jsonString(n.Locals) != jsonString(locals)
-	_, err = t.tx.Exec(`UPDATE nodes SET public_ip = ?, udp_port = ?, locals = ?, client_version = ?, last_seen = ? WHERE id = ?`,
-		addrString(public), port, jsonString(locals), version, now(), id)
+	changed := n.PublicIP != r.PublicIP || n.UDPPort != r.UDPPort || jsonString(n.Locals) != jsonString(r.Locals) ||
+		jsonString(n.Reflexive) != jsonString(r.Reflexive) || n.NAT != r.NAT || n.PortMap != r.PortMap
+	_, err = t.tx.Exec(`UPDATE nodes SET public_ip = ?, udp_port = ?, locals = ?, client_version = ?, last_seen = ?,
+		nat_type = ?, reflexive = ?, portmap = ? WHERE id = ?`,
+		addrString(r.PublicIP), r.UDPPort, jsonString(r.Locals), r.Version, now(),
+		r.NAT, jsonString(r.Reflexive), addrPortString(r.PortMap), id)
 	return changed, err
 }
 
-const nodeCols = `id, ed_key, box_key, name, public_ip, udp_port, locals, client_version, last_seen, created_at`
+const nodeCols = `id, ed_key, box_key, name, public_ip, udp_port, locals, client_version, last_seen, created_at, nat_type, reflexive, portmap`
 
 func scanNode(row interface{ Scan(...any) error }) (*Node, error) {
 	var n Node
-	var pub, locals string
+	var pub, locals, reflexive, portmap string
 	var seen, created int64
-	if err := row.Scan(&n.ID, &n.EdKey, &n.BoxKey, &n.Name, &pub, &n.UDPPort, &locals, &n.Version, &seen, &created); err != nil {
+	if err := row.Scan(&n.ID, &n.EdKey, &n.BoxKey, &n.Name, &pub, &n.UDPPort, &locals, &n.Version, &seen, &created,
+		&n.NAT, &reflexive, &portmap); err != nil {
 		return nil, notFound(err)
 	}
 	n.PublicIP, _ = netip.ParseAddr(pub)
 	json.Unmarshal([]byte(locals), &n.Locals)
+	json.Unmarshal([]byte(reflexive), &n.Reflexive)
+	n.PortMap, _ = netip.ParseAddrPort(portmap)
 	n.LastSeen, n.CreatedAt = time.Unix(seen, 0), time.Unix(created, 0)
 	return &n, nil
 }
@@ -361,9 +426,12 @@ type Member struct {
 	Status    string
 	CreatedAt time.Time
 	// From the nodes table:
-	LastSeen time.Time
-	PublicIP netip.Addr
-	Version  string
+	LastSeen  time.Time
+	PublicIP  netip.Addr
+	Version   string
+	NAT       string
+	Reflexive []netip.AddrPort
+	PortMap   netip.AddrPort
 }
 
 func (t *Tx) AddMember(m *Member) error {
@@ -372,17 +440,21 @@ func (t *Tx) AddMember(m *Member) error {
 	return err
 }
 
-const memberCols = `m.room_id, m.node_id, m.name, m.wg_key, m.ip, m.tags, m.status, m.created_at, n.last_seen, n.public_ip, n.client_version`
+const memberCols = `m.room_id, m.node_id, m.name, m.wg_key, m.ip, m.tags, m.status, m.created_at, n.last_seen, n.public_ip, n.client_version,
+	n.nat_type, n.reflexive, n.portmap`
 
 func scanMember(row interface{ Scan(...any) error }) (*Member, error) {
 	var m Member
-	var ip, tags, pub string
+	var ip, tags, pub, reflexive, portmap string
 	var created, seen int64
-	if err := row.Scan(&m.RoomID, &m.NodeID, &m.Name, &m.WGKey, &ip, &tags, &m.Status, &created, &seen, &pub, &m.Version); err != nil {
+	if err := row.Scan(&m.RoomID, &m.NodeID, &m.Name, &m.WGKey, &ip, &tags, &m.Status, &created, &seen, &pub, &m.Version,
+		&m.NAT, &reflexive, &portmap); err != nil {
 		return nil, notFound(err)
 	}
 	m.IP, _ = netip.ParseAddr(ip)
 	m.PublicIP, _ = netip.ParseAddr(pub)
+	json.Unmarshal([]byte(reflexive), &m.Reflexive)
+	m.PortMap, _ = netip.ParseAddrPort(portmap)
 	json.Unmarshal([]byte(tags), &m.Tags)
 	m.CreatedAt, m.LastSeen = time.Unix(created, 0), time.Unix(seen, 0)
 	return &m, nil
@@ -537,6 +609,13 @@ func (t *Tx) ListAudit(limit int) ([]AuditEntry, error) {
 }
 
 func addrString(a netip.Addr) string {
+	if !a.IsValid() {
+		return ""
+	}
+	return a.String()
+}
+
+func addrPortString(a netip.AddrPort) string {
 	if !a.IsValid() {
 		return ""
 	}

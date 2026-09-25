@@ -31,6 +31,12 @@ const (
 type Endpoints struct {
 	UDPPort uint16           `json:"udp_port"`
 	Locals  []netip.AddrPort `json:"locals"`
+	// Reflexive are the node's external addresses as seen by STUN servers.
+	Reflexive []netip.AddrPort `json:"reflexive,omitempty"`
+	// NAT is the NAT type from netcheck ("none", "cone", "symmetric", ...).
+	NAT string `json:"nat,omitempty"`
+	// PortMap is the external address the router forwards (UPnP / NAT-PMP).
+	PortMap netip.AddrPort `json:"portmap,omitzero"`
 }
 
 type JoinRequest struct {
@@ -65,6 +71,8 @@ type NetMap struct {
 	ObservedIP netip.Addr      `json:"observed_ip"`
 	Rooms      []RoomState     `json:"rooms"`
 	Peers      map[string]Peer `json:"peers"` // by node ID
+	// STUN servers ("host:port") the node should use to learn its address.
+	STUN []string `json:"stun,omitempty"`
 }
 
 type RoomState struct {
@@ -76,10 +84,13 @@ type RoomState struct {
 // Peer is advisory reachability info (not signed: AmneziaWG authenticates
 // peers by key, so a wrong endpoint can only cause a failed connection).
 type Peer struct {
-	PublicIP netip.Addr       `json:"public_ip"`
-	UDPPort  uint16           `json:"udp_port"`
-	Locals   []netip.AddrPort `json:"locals"`
-	Online   bool             `json:"online"`
+	PublicIP  netip.Addr       `json:"public_ip"`
+	UDPPort   uint16           `json:"udp_port"`
+	Locals    []netip.AddrPort `json:"locals"`
+	Reflexive []netip.AddrPort `json:"reflexive,omitempty"`
+	PortMap   netip.AddrPort   `json:"portmap,omitzero"`
+	NAT       string           `json:"nat,omitempty"`
+	Online    bool             `json:"online"`
 }
 
 type Error struct {
