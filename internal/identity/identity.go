@@ -121,6 +121,19 @@ func (id *Identity) BoxKey() (priv, pub Key) {
 	return priv, priv.Public()
 }
 
+// DiscoKey derives the X25519 key pair used for path discovery between
+// nodes (see package disco). It is separate from BoxKey so the two
+// protocols can never be confused.
+func (id *Identity) DiscoKey() (priv, pub Key) {
+	b, err := hkdf.Key(sha256.New, id.priv.Seed(), []byte(wgKeySalt), "disco", KeyLen)
+	if err != nil {
+		panic(err)
+	}
+	copy(priv[:], b)
+	priv.clamp()
+	return priv, priv.Public()
+}
+
 // NodeIDFromPublic computes the NodeID for an Ed25519 public key.
 func NodeIDFromPublic(pub ed25519.PublicKey) string {
 	sum := blake2s.Sum256(pub)

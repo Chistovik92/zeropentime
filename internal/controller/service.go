@@ -16,6 +16,7 @@ import (
 	"math/big"
 	"net/netip"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -48,6 +49,9 @@ type Service struct {
 	hub *hub
 	log *slog.Logger
 	now func() time.Time
+
+	pathsMu sync.Mutex
+	paths   map[string]api.PathStats // by node ID, as last reported
 }
 
 // NewService creates the service on an open store.
@@ -56,7 +60,7 @@ func NewService(st *store.Store, log *slog.Logger) (*Service, error) {
 	if err := st.Read(context.Background(), func(tx *store.Tx) (err error) { v, err = tx.Version(); return }); err != nil {
 		return nil, err
 	}
-	return &Service{st: st, hub: newHub(v), log: log, now: time.Now}, nil
+	return &Service{st: st, hub: newHub(v), log: log, now: time.Now, paths: map[string]api.PathStats{}}, nil
 }
 
 // change runs fn in a transaction, bumps the global version and wakes pollers.
@@ -447,6 +451,12 @@ func reach(e api.Endpoints, remote netip.Addr, version string) store.Reach {
 	if e.PortMap.IsValid() {
 		r.PortMap = e.PortMap
 	}
+	if !e.DiscoKey.IsZero() {
+		r.DiscoKey = e.DiscoKey[:]
+	}
+	if len(e.Relay) <= 255 {
+		r.Relay = e.Relay
+	}
 	if len(r.Version) > 32 {
 		r.Version = r.Version[:32]
 	}
@@ -566,6 +576,9 @@ func (s *Service) Poll(ctx context.Context, nodeKey ed25519.PublicKey, req *api.
 	if err != nil {
 		return nil, boxKey, err
 	}
+	s.pathsMu.Lock()
+	s.paths[nodeID] = req.Endpoints.Paths
+	s.pathsMu.Unlock()
 	if changed {
 		// Peers need the new address: bump the version for everybody.
 		if err := s.change(ctx, func(*store.Tx) error { return nil }); err != nil {
@@ -620,8 +633,13 @@ func (s *Service) netMap(ctx context.Context, nodeID string) (*api.NetMap, error
 							}
 							nm.Peers[o.NodeID] = api.Peer{
 								PublicIP: n.PublicIP, UDPPort: n.UDPPort, Locals: n.Locals,
-								Reflexive: n.Reflexive, PortMap: n.PortMap, NAT: n.NAT,
+								Reflexive: n.Reflexive, PortMap: n.PortMap, NAT: n.NAT, Relay: n.Relay,
 								Online: s.now().Sub(n.LastSeen) < OnlineWindow,
+							}
+							if len(n.DiscoKey) == identity.KeyLen {
+								p := nm.Peers[o.NodeID]
+								copy(p.DiscoKey[:], n.DiscoKey)
+								nm.Peers[o.NodeID] = p
 							}
 						}
 					}
@@ -635,4 +653,47 @@ func (s *Service) netMap(ctx context.Context, nodeID string) (*api.NetMap, error
 		return nil
 	})
 	return nm, err
+}
+
+// Paths returns how a node last said it reaches its peers.
+func (s *Service) Paths(nodeID string) api.PathStats {
+	s.pathsMu.Lock()
+	defer s.pathsMu.Unlock()
+	return s.paths[nodeID]
+}
+
+// RelayKey returns the controller's relay key pair, creating it once.
+func (s *Service) RelayKey(ctx context.Context) (priv, pub identity.Key, err error) {
+	err = s.st.Tx(ctx, func(tx *store.Tx) error {
+		v, err := tx.Setting("relay_key")
+		if err == nil && len(v) == identity.KeyLen {
+			copy(priv[:], v)
+			return nil
+		}
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+		if _, err := rand.Read(priv[:]); err != nil {
+			return err
+		}
+		priv[0] &= 248
+		priv[31] = (priv[31] & 127) | 64
+		return tx.SetSetting("relay_key", priv[:])
+	})
+	return priv, priv.Public(), err
+}
+
+// relayAuth lets the relay ask the database who may use it.
+type relayAuth struct{ s *Service }
+
+func (a relayAuth) Node(key identity.Key) (string, bool) {
+	var id string
+	err := a.s.st.Read(context.Background(), func(tx *store.Tx) (err error) { id, err = tx.NodeByDiscoKey(key[:]); return })
+	return id, err == nil
+}
+
+func (a relayAuth) CanSend(src, dst string) bool {
+	var ok bool
+	err := a.s.st.Read(context.Background(), func(tx *store.Tx) (err error) { ok, err = tx.ShareActiveRoom(src, dst); return })
+	return err == nil && ok
 }

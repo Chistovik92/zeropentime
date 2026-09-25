@@ -54,6 +54,12 @@ var migrations = []string{
 	`ALTER TABLE nodes ADD COLUMN nat_type  TEXT NOT NULL DEFAULT '';
 	 ALTER TABLE nodes ADD COLUMN reflexive TEXT NOT NULL DEFAULT 'null';
 	 ALTER TABLE nodes ADD COLUMN portmap   TEXT NOT NULL DEFAULT '';`,
+	// 3 (0.2.1): path discovery between nodes.
+	`ALTER TABLE nodes ADD COLUMN disco_key BLOB;`,
+	// 4 (0.2.2): relay.
+	`CREATE TABLE settings (key TEXT PRIMARY KEY, value BLOB NOT NULL);
+	 ALTER TABLE nodes ADD COLUMN relay TEXT NOT NULL DEFAULT '';
+	 CREATE INDEX nodes_disco ON nodes(disco_key);`,
 }
 
 // SchemaVersion is the version a fully migrated database has.
@@ -258,6 +264,8 @@ type Node struct {
 	NAT       string
 	Reflexive []netip.AddrPort
 	PortMap   netip.AddrPort
+	DiscoKey  []byte
+	Relay     string
 }
 
 // Reach is what a node reports about how it can be reached.
@@ -268,6 +276,8 @@ type Reach struct {
 	Reflexive []netip.AddrPort
 	NAT       string
 	PortMap   netip.AddrPort
+	DiscoKey  []byte
+	Relay     string
 	Version   string
 }
 
@@ -287,22 +297,23 @@ func (t *Tx) UpdateNodeEndpoints(id string, r Reach) (bool, error) {
 		return false, err
 	}
 	changed := n.PublicIP != r.PublicIP || n.UDPPort != r.UDPPort || jsonString(n.Locals) != jsonString(r.Locals) ||
-		jsonString(n.Reflexive) != jsonString(r.Reflexive) || n.NAT != r.NAT || n.PortMap != r.PortMap
+		jsonString(n.Reflexive) != jsonString(r.Reflexive) || n.NAT != r.NAT || n.PortMap != r.PortMap ||
+		string(n.DiscoKey) != string(r.DiscoKey) || n.Relay != r.Relay
 	_, err = t.tx.Exec(`UPDATE nodes SET public_ip = ?, udp_port = ?, locals = ?, client_version = ?, last_seen = ?,
-		nat_type = ?, reflexive = ?, portmap = ? WHERE id = ?`,
+		nat_type = ?, reflexive = ?, portmap = ?, disco_key = ?, relay = ? WHERE id = ?`,
 		addrString(r.PublicIP), r.UDPPort, jsonString(r.Locals), r.Version, now(),
-		r.NAT, jsonString(r.Reflexive), addrPortString(r.PortMap), id)
+		r.NAT, jsonString(r.Reflexive), addrPortString(r.PortMap), r.DiscoKey, r.Relay, id)
 	return changed, err
 }
 
-const nodeCols = `id, ed_key, box_key, name, public_ip, udp_port, locals, client_version, last_seen, created_at, nat_type, reflexive, portmap`
+const nodeCols = `id, ed_key, box_key, name, public_ip, udp_port, locals, client_version, last_seen, created_at, nat_type, reflexive, portmap, disco_key, relay`
 
 func scanNode(row interface{ Scan(...any) error }) (*Node, error) {
 	var n Node
 	var pub, locals, reflexive, portmap string
 	var seen, created int64
 	if err := row.Scan(&n.ID, &n.EdKey, &n.BoxKey, &n.Name, &pub, &n.UDPPort, &locals, &n.Version, &seen, &created,
-		&n.NAT, &reflexive, &portmap); err != nil {
+		&n.NAT, &reflexive, &portmap, &n.DiscoKey, &n.Relay); err != nil {
 		return nil, notFound(err)
 	}
 	n.PublicIP, _ = netip.ParseAddr(pub)
@@ -315,6 +326,36 @@ func scanNode(row interface{ Scan(...any) error }) (*Node, error) {
 
 func (t *Tx) NodeByID(id string) (*Node, error) {
 	return scanNode(t.tx.QueryRow(`SELECT `+nodeCols+` FROM nodes WHERE id = ?`, id))
+}
+
+// NodeByDiscoKey returns the node owning a disco key if it is an active
+// member of at least one room.
+func (t *Tx) NodeByDiscoKey(key []byte) (string, error) {
+	var id string
+	err := t.tx.QueryRow(`SELECT n.id FROM nodes n WHERE n.disco_key = ? AND EXISTS
+		(SELECT 1 FROM members m WHERE m.node_id = n.id AND m.status = 'active')`, key).Scan(&id)
+	return id, notFound(err)
+}
+
+// ShareActiveRoom reports whether both nodes are active members of one room.
+func (t *Tx) ShareActiveRoom(a, b string) (bool, error) {
+	var ok bool
+	err := t.tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM members x JOIN members y ON x.room_id = y.room_id
+		WHERE x.node_id = ? AND y.node_id = ? AND x.status = 'active' AND y.status = 'active')`, a, b).Scan(&ok)
+	return ok, err
+}
+
+// ---- settings ----
+
+func (t *Tx) Setting(key string) ([]byte, error) {
+	var v []byte
+	err := t.tx.QueryRow(`SELECT value FROM settings WHERE key = ?`, key).Scan(&v)
+	return v, notFound(err)
+}
+
+func (t *Tx) SetSetting(key string, value []byte) error {
+	_, err := t.tx.Exec(`INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	return err
 }
 
 // ---- rooms ----

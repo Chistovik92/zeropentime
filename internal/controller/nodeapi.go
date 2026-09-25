@@ -102,6 +102,7 @@ func (h *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	nm.STUN = h.stunServers(r)
+	nm.Relays = h.relays(r)
 	sealed(w, nm, boxKey)
 }
 

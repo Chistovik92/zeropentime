@@ -19,6 +19,8 @@ import (
 
 	qrcode "github.com/skip2/go-qrcode"
 
+	"github.com/Chistovik92/zeropentime/internal/api"
+
 	"github.com/Chistovik92/zeropentime/internal/store"
 )
 
@@ -297,6 +299,7 @@ type roomData struct {
 	*RoomView
 	NewInvite   string
 	NewInviteQR template.URL
+	Paths       map[string]api.PathStats // by node ID
 }
 
 func (h *Server) roomView(w http.ResponseWriter, r *http.Request, u *store.User, csrf string, extra func(*roomData)) {
@@ -305,7 +308,10 @@ func (h *Server) roomView(w http.ResponseWriter, r *http.Request, u *store.User,
 		back(w, r, "/rooms", err, "")
 		return
 	}
-	d := &roomData{RoomView: rv}
+	d := &roomData{RoomView: rv, Paths: map[string]api.PathStats{}}
+	for _, m := range rv.Members {
+		d.Paths[m.NodeID] = h.svc.Paths(m.NodeID)
+	}
 	if extra != nil {
 		extra(d)
 	}

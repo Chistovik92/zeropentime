@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
@@ -66,6 +67,25 @@ jobs:
         run: docker compose -f deploy/docker-compose.yml logs || true
         env:
           ZPT_DOMAIN: localhost
+
+  natlab:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: sudo apt-get install -y -qq nftables >/dev/null
+      - run: go build -o "$RUNNER_TEMP/bin/" ./cmd/zpt ./cmd/zpt-controller
+      - name: NAT-стенд (network namespaces, настоящие TUN)
+        run: sudo NATLAB_TRACE=1 NATLAB_WORK="$RUNNER_TEMP/natlab" bash test/natlab/run.sh "$RUNNER_TEMP/bin"
+      - name: Логи стенда
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: natlab-logs
+          path: ${{ runner.temp }}/natlab-logs
+          if-no-files-found: ignore
 
   dco:
     if: github.event_name == 'pull_request'

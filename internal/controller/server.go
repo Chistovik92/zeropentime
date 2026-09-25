@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Chistovik92/zeropentime/internal/api"
+	"github.com/Chistovik92/zeropentime/internal/relay"
 	"github.com/Chistovik92/zeropentime/internal/stun"
 )
 
@@ -31,6 +32,11 @@ type Config struct {
 	// STUNPublic are the STUN addresses given to nodes ("host:port"). Empty:
 	// the host of PublicURL (or of the request) with the STUNListen ports.
 	STUNPublic []string
+	// RelayListen is the UDP address of the built-in relay. Empty: no relay.
+	RelayListen string
+	// RelayPublic is the relay address given to nodes. Empty: the host of
+	// PublicURL (or of the request) with the RelayListen port.
+	RelayPublic string
 }
 
 // Server is the controller HTTP server: node API and admin panel.
@@ -40,6 +46,7 @@ type Server struct {
 	log     *slog.Logger
 	panel   *panel
 	limiter loginLimiter
+	relay   *relay.Server
 }
 
 // NewServer wires the handlers.
@@ -48,7 +55,51 @@ func NewServer(cfg Config, svc *Service, log *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, svc: svc, log: log, panel: p}, nil
+	h := &Server{cfg: cfg, svc: svc, log: log, panel: p}
+	if cfg.RelayListen != "" {
+		priv, pub, err := svc.RelayKey(context.Background())
+		if err != nil {
+			return nil, err
+		}
+		h.relay = relay.NewServer(priv, pub, relayAuth{svc}, log)
+	}
+	return h, nil
+}
+
+// RunRelay serves the relay until ctx ends (ServeListener calls it).
+func (h *Server) RunRelay(ctx context.Context) error {
+	if h.relay == nil {
+		return nil
+	}
+	return h.relay.ServeUDP(ctx, h.cfg.RelayListen)
+}
+
+// relays returns the relay list for nodes.
+func (h *Server) relays(r *http.Request) []api.Relay {
+	if h.relay == nil {
+		return nil
+	}
+	addr := h.cfg.RelayPublic
+	if addr == "" {
+		_, port, err := net.SplitHostPort(h.cfg.RelayListen)
+		if err != nil {
+			return nil
+		}
+		addr = net.JoinHostPort(h.publicHost(r), port)
+	}
+	return []api.Relay{{Addr: addr, Key: h.relay.PublicKey()}}
+}
+
+// publicHost is the host nodes use to reach this controller.
+func (h *Server) publicHost(r *http.Request) string {
+	host := r.Host
+	if u, err := url.Parse(h.cfg.PublicURL); err == nil && u.Host != "" {
+		host = u.Host
+	}
+	if hh, _, err := net.SplitHostPort(host); err == nil {
+		host = hh
+	}
+	return host
 }
 
 // Handler returns the root HTTP handler.
@@ -67,13 +118,7 @@ func (h *Server) stunServers(r *http.Request) []string {
 	if len(h.cfg.STUNPublic) > 0 {
 		return h.cfg.STUNPublic
 	}
-	host := r.Host
-	if u, err := url.Parse(h.cfg.PublicURL); err == nil && u.Host != "" {
-		host = u.Host
-	}
-	if hh, _, err := net.SplitHostPort(host); err == nil {
-		host = hh
-	}
+	host := h.publicHost(r)
 	var out []string
 	for _, l := range h.cfg.STUNListen {
 		if _, port, err := net.SplitHostPort(l); err == nil {
@@ -106,6 +151,15 @@ func (h *Server) ServeListener(ctx context.Context, ln net.Listener) error {
 			}
 		case <-time.After(100 * time.Millisecond): // listening
 		}
+	}
+	if h.relay != nil {
+		rctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		go func() {
+			if err := h.RunRelay(rctx); err != nil {
+				h.log.Error("relay stopped", "err", err)
+			}
+		}()
 	}
 	srv := &http.Server{
 		Handler:           h.Handler(),

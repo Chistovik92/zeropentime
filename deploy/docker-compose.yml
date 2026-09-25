@@ -15,6 +15,7 @@ services:
     ports:
       - "3478:3478/udp"   # STUN: узлы узнают свой внешний адрес
       - "3479:3479/udp"
+      - "3480:3480/udp"   # relay: когда прямой путь не работает
     volumes:
       - zpt-data:/data
     restart: unless-stopped

@@ -24,11 +24,13 @@ import (
 	"github.com/Chistovik92/zeropentime/internal/api"
 	"github.com/Chistovik92/zeropentime/internal/client"
 	"github.com/Chistovik92/zeropentime/internal/config"
+	"github.com/Chistovik92/zeropentime/internal/disco"
 	"github.com/Chistovik92/zeropentime/internal/identity"
 	"github.com/Chistovik92/zeropentime/internal/magicsock"
 	"github.com/Chistovik92/zeropentime/internal/netcheck"
 	"github.com/Chistovik92/zeropentime/internal/pki"
 	"github.com/Chistovik92/zeropentime/internal/portmap"
+	"github.com/Chistovik92/zeropentime/internal/relay"
 	"github.com/Chistovik92/zeropentime/internal/room"
 )
 
@@ -53,6 +55,8 @@ type Options struct {
 	LocalEndpoints func(port uint16, exclude []netip.Prefix) []netip.AddrPort
 	// LocalAddrs overrides the list of this machine's IPs used by netcheck (tests).
 	LocalAddrs func() []netip.Addr
+	// BlockDirectForTests accepts only relayed traffic (tests only).
+	BlockDirectForTests bool
 }
 
 // Node is a running daemon.
@@ -70,7 +74,14 @@ type Node struct {
 	reports  map[string]netcheck.Report
 	portMap  netip.AddrPort
 	changed  chan struct{} // closed and replaced when our reachability changes
+	disco    *discoMgr
 
+	relayMu     sync.Mutex
+	relay       *relay.Client
+	relayAddr   string
+	relayCancel context.CancelFunc
+
+	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
@@ -94,9 +105,10 @@ func Start(o Options) (_ *Node, err error) {
 	if err != nil {
 		return nil, err
 	}
+	sock.DropDirectForTests(o.BlockDirectForTests)
 	ctx, cancel := context.WithCancel(context.Background())
 	n := &Node{
-		ID: o.Identity, opts: o, log: o.Log, sock: sock, cancel: cancel,
+		ID: o.Identity, opts: o, log: o.Log, sock: sock, ctx: ctx, cancel: cancel,
 		rooms: map[string]*running{}, versions: map[string]int64{}, pending: map[string]string{}, last: map[string]*api.NetMap{},
 		reports: map[string]netcheck.Report{}, changed: make(chan struct{}),
 	}
@@ -116,7 +128,10 @@ func Start(o Options) (_ *Node, err error) {
 		}
 	}
 	if o.StatePath != "" {
-		n.wg.Add(1)
+		n.disco = newDiscoMgr(n)
+		sock.SetDisco(disco.TagKey(n.disco.pub), n.disco.handle)
+		n.wg.Add(2)
+		go func() { defer n.wg.Done(); n.disco.run(ctx) }()
 		go n.supervise(ctx)
 	}
 	if !o.Config.Userspace && o.Config.PortMapEnabled() {
@@ -223,6 +238,20 @@ func (n *Node) stopLocked(key string) {
 
 // ---- controllers ----
 
+// reapplyAll applies the last netmap of every controller again (after new
+// pins, or when a better path to a peer is found).
+func (n *Node) reapplyAll() {
+	n.mu.Lock()
+	last := make(map[string]*api.NetMap, len(n.last))
+	for url, nm := range n.last {
+		last[url] = nm
+	}
+	n.mu.Unlock()
+	for url, nm := range last {
+		n.apply(url, nm)
+	}
+}
+
 // supervise starts and stops one syncer per controller in the state file.
 func (n *Node) supervise(ctx context.Context) {
 	defer n.wg.Done()
@@ -244,15 +273,7 @@ func (n *Node) supervise(ctx context.Context) {
 			// re-apply the last netmaps whenever the pins change.
 			if pins := fmt.Sprint(st.Controllers); pins != prevPins {
 				prevPins = pins
-				n.mu.Lock()
-				last := make(map[string]*api.NetMap, len(n.last))
-				for url, nm := range n.last {
-					last[url] = nm
-				}
-				n.mu.Unlock()
-				for url, nm := range last {
-					n.apply(url, nm)
-				}
+				n.reapplyAll()
 			}
 			want := map[string]bool{}
 			for _, c := range st.Controllers {
@@ -331,6 +352,7 @@ func (n *Node) sync(ctx context.Context, url string) {
 		default:
 		}
 		stunServers <- nm.STUN
+		n.ensureRelay(nm.Relays)
 		n.apply(url, nm)
 	}
 }
@@ -384,6 +406,9 @@ func (n *Node) endpoints(url string) api.Endpoints {
 		Reflexive: rep.Mapped,
 		NAT:       rep.NAT,
 		PortMap:   pm,
+		DiscoKey:  n.discoPub(),
+		Relay:     n.relayReadyAddr(),
+		Paths:     n.pathStats(),
 	}
 }
 
@@ -399,6 +424,7 @@ func (n *Node) apply(url string, nm *api.NetMap) {
 	n.last[url] = nm
 
 	desired := map[string]config.Room{}
+	active := map[string]bool{} // peers in rooms we are an active member of
 	for _, rs := range nm.Rooms {
 		keyStr, pinned := st.RoomKey(url, rs.RoomID)
 		if !pinned {
@@ -412,7 +438,7 @@ func (n *Node) apply(url string, nm *api.NetMap) {
 			continue
 		}
 		delete(n.pending, rs.RoomID)
-		rc, err := n.roomFromConfig(url, keyStr, rs, nm)
+		rc, err := n.roomFromConfig(url, keyStr, rs, nm, active)
 		if err != nil {
 			n.log.Error("rejecting room config", "room_id", rs.RoomID, "err", err)
 			if cur, ok := n.rooms[rs.RoomID]; ok {
@@ -423,6 +449,10 @@ func (n *Node) apply(url string, nm *api.NetMap) {
 		if rc != nil {
 			desired[rs.RoomID] = *rc
 		}
+	}
+
+	if n.disco != nil {
+		n.disco.setPeers(url, nm.Peers, active)
 	}
 
 	for key, r := range n.rooms {
@@ -459,7 +489,7 @@ func (n *Node) apply(url string, nm *api.NetMap) {
 
 // roomFromConfig verifies a signed room config and turns it into a local
 // room description. It returns nil if this node is not an active member.
-func (n *Node) roomFromConfig(url, keyStr string, rs api.RoomState, nm *api.NetMap) (*config.Room, error) {
+func (n *Node) roomFromConfig(url, keyStr string, rs api.RoomState, nm *api.NetMap, active map[string]bool) (*config.Room, error) {
 	pub, err := pki.ParseRoomKey(keyStr)
 	if err != nil {
 		return nil, err
@@ -485,10 +515,11 @@ func (n *Node) roomFromConfig(url, keyStr string, rs api.RoomState, nm *api.NetM
 			found = true
 			continue
 		}
+		active[m.NodeID] = true
 		rc.Peers = append(rc.Peers, config.Peer{
 			Name:       m.Name,
 			PublicKey:  m.WGKey,
-			Endpoint:   chooseEndpoint(nm.Peers[m.NodeID], nm.ObservedIP, n.localPrefixes()),
+			Endpoint:   n.peerEndpoint(m.NodeID, chooseEndpoint(nm.Peers[m.NodeID], nm.ObservedIP, n.localPrefixes())),
 			AllowedIPs: []netip.Prefix{netip.PrefixFrom(m.IP, 32)},
 			Keepalive:  PeerKeepalive,
 		})
@@ -497,6 +528,14 @@ func (n *Node) roomFromConfig(url, keyStr string, rs api.RoomState, nm *api.NetM
 		return nil, nil
 	}
 	return rc, nil
+}
+
+// peerEndpoint prefers the path disco confirmed over the controller's guess.
+func (n *Node) peerEndpoint(nodeID, guess string) string {
+	if n.disco == nil {
+		return guess
+	}
+	return n.disco.endpoint(nodeID, guess)
 }
 
 // chooseEndpoint picks how to reach a peer, best first: its LAN address
@@ -621,4 +660,64 @@ func discoverLocal(port uint16, exclude []netip.Prefix) []netip.AddrPort {
 		}
 	}
 	return out
+}
+
+func (n *Node) discoPub() identity.Key {
+	if n.disco == nil {
+		return identity.Key{}
+	}
+	return n.disco.pub
+}
+
+// ensureRelay keeps a session with the first relay a controller offers.
+// Only nodes that follow controllers use relays (they need the controller
+// to know them).
+func (n *Node) ensureRelay(relays []api.Relay) {
+	if n.disco == nil {
+		return
+	}
+	n.relayMu.Lock()
+	defer n.relayMu.Unlock()
+	if len(relays) == 0 {
+		return // keep what we have: another controller may have offered it
+	}
+	want := relays[0]
+	if n.relay != nil && n.relayAddr == want.Addr {
+		return
+	}
+	addrs := netcheck.Resolve(n.ctx, []string{want.Addr})
+	if len(addrs) == 0 {
+		n.log.Warn("cannot resolve relay", "relay", want.Addr)
+		return
+	}
+	if n.relayCancel != nil {
+		n.relayCancel()
+	}
+	ctx, cancel := context.WithCancel(n.ctx)
+	c := relay.NewClient(addrs[0], want.Key, n.disco.priv, n.disco.pub, n.sock.WriteDirect,
+		func(src [relay.NodeIDLen]byte, payload []byte) { n.sock.Receive(payload, src) }, n.log)
+	n.sock.SetRelay(addrs[0], c.Handle, c.Send)
+	n.relay, n.relayAddr, n.relayCancel = c, want.Addr, cancel
+	n.wg.Add(1)
+	go func() {
+		defer n.wg.Done()
+		c.Run(ctx)
+	}()
+}
+
+// relayReadyAddr is the relay address peers can reach us through.
+func (n *Node) relayReadyAddr() string {
+	n.relayMu.Lock()
+	defer n.relayMu.Unlock()
+	if n.relay != nil && n.relay.Ready() {
+		return n.relayAddr
+	}
+	return ""
+}
+
+func (n *Node) pathStats() api.PathStats {
+	if n.disco == nil {
+		return api.PathStats{}
+	}
+	return n.disco.stats()
 }

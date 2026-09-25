@@ -134,6 +134,12 @@ func (s *Service) Logout(ctx context.Context, token string) error {
 
 // ---- users ----
 
+// UserByLogin looks up an account (for the CLI).
+func (s *Service) UserByLogin(ctx context.Context, login string) (u *store.User, err error) {
+	err = s.st.Read(ctx, func(tx *store.Tx) error { u, err = tx.UserByLogin(strings.ToLower(login)); return err })
+	return
+}
+
 // ValidateLogin checks a login name.
 func ValidateLogin(login string) (string, error) {
 	login = strings.TrimSpace(strings.ToLower(login))

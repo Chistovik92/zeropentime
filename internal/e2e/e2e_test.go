@@ -12,10 +12,14 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -90,12 +94,20 @@ func newEnv(t *testing.T) *env {
 	t.Cleanup(stopSTUN)
 	go stun.Serve(sctx, stunAddrs, quiet)
 
-	srv, err := controller.NewServer(controller.Config{STUNListen: stunAddrs}, svc, quiet)
+	rc, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayAddr := rc.LocalAddr().String()
+	rc.Close()
+
+	srv, err := controller.NewServer(controller.Config{STUNListen: stunAddrs, RelayListen: relayAddr}, svc, quiet)
 	if err != nil {
 		t.Fatal(err)
 	}
 	hs := httptest.NewServer(srv.Handler())
 	t.Cleanup(hs.Close)
+	go srv.RunRelay(sctx)
 
 	ctx := context.Background()
 	if err := svc.CreateUser(ctx, nil, "admin", "correct horse battery", true); err != nil {
@@ -136,6 +148,16 @@ type testNode struct {
 
 func (e *env) node(name string) *testNode {
 	e.t.Helper()
+	return e.nodeWith(name, func(uint16, []netip.Prefix) []netip.AddrPort { return nil })
+}
+
+func (e *env) nodeWith(name string, locals func(uint16, []netip.Prefix) []netip.AddrPort) *testNode {
+	e.t.Helper()
+	return e.nodeOpts(name, locals, false)
+}
+
+func (e *env) nodeOpts(name string, locals func(uint16, []netip.Prefix) []netip.AddrPort, blockDirect bool) *testNode {
+	e.t.Helper()
 	id, _ := identity.Generate()
 	dir := e.t.TempDir()
 	port := 0
@@ -146,7 +168,7 @@ func (e *env) node(name string) *testNode {
 	tn := &testNode{id: id, state: filepath.Join(dir, "state.json")}
 	n, err := node.Start(node.Options{
 		Config: cfg, Identity: id, Log: e.log.With("node", name), StatePath: tn.state, Version: "test",
-		LocalEndpoints: func(uint16, []netip.Prefix) []netip.AddrPort { return nil },
+		LocalEndpoints: locals, BlockDirectForTests: blockDirect,
 	})
 	if err != nil {
 		e.t.Fatal(err)
@@ -435,4 +457,105 @@ func TestExternalAddressReported(t *testing.T) {
 	})
 	srv := serveEcho(t, b, "game")
 	eventually(t, 10*time.Second, "traffic", func() error { return talk(a, "game", srv, 3*time.Second) })
+}
+
+// 0.2.1: each node advertises a "LAN" address that leads nowhere, so the
+// controller's first guess for both peers is wrong. Path discovery must
+// find the working address on its own and hand it to AmneziaWG.
+func TestDiscoFindsWorkingPath(t *testing.T) {
+	e := newEnv(t)
+	room := e.room("game", "auto")
+	dead := func(uint16, []netip.Prefix) []netip.AddrPort {
+		return []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:9")} // discard port
+	}
+	a, b := e.nodeWith("a", dead), e.nodeWith("b", dead)
+	e.mustJoin(a, e.invite(room.ID, 0, false), "alice", "active")
+	e.mustJoin(b, e.invite(room.ID, 0, false), "bob", "active")
+
+	endpointIs := func(n *testNode, port uint16) func() error {
+		return func() error {
+			r, err := n.node.Room("game")
+			if err != nil {
+				return err
+			}
+			stats, _ := r.Stats()
+			want := fmt.Sprintf("endpoint=127.0.0.1:%d", port)
+			if !bytes.Contains([]byte(stats), []byte(want)) {
+				return fmt.Errorf("no %s in\n%s", want, stats)
+			}
+			return nil
+		}
+	}
+	took := eventually(t, 20*time.Second, "a uses the discovered path to b", endpointIs(a, b.node.Port()))
+	eventually(t, 10*time.Second, "b uses the discovered path to a", endpointIs(b, a.node.Port()))
+	t.Logf("path discovered in %s", took)
+
+	srv := serveEcho(t, b, "game")
+	eventually(t, 10*time.Second, "traffic over the discovered path", func() error { return talk(a, "game", srv, 3*time.Second) })
+}
+
+// 0.2.2: no direct path can work (both nodes drop everything that does not
+// come through the relay), so traffic must flow through the controller's
+// relay — and the relay only ever sees encrypted AmneziaWG packets.
+func TestRelayWhenNoDirectPath(t *testing.T) {
+	e := newEnv(t)
+	room := e.room("game", "auto")
+	none := func(uint16, []netip.Prefix) []netip.AddrPort { return nil }
+	a, b := e.nodeOpts("a", none, true), e.nodeOpts("b", none, true)
+	e.mustJoin(a, e.invite(room.ID, 0, false), "alice", "active")
+	e.mustJoin(b, e.invite(room.ID, 0, false), "bob", "active")
+
+	viaRelay := func(n *testNode) func() error {
+		return func() error {
+			r, err := n.node.Room("game")
+			if err != nil {
+				return err
+			}
+			stats, _ := r.Stats()
+			if !bytes.Contains([]byte(stats), []byte("endpoint=[fd7a:7a70:72ff:")) {
+				return fmt.Errorf("peer endpoint is not the relay:\n%s", stats)
+			}
+			return nil
+		}
+	}
+	took := eventually(t, 30*time.Second, "a reaches b through the relay", viaRelay(a))
+	eventually(t, 15*time.Second, "b reaches a through the relay", viaRelay(b))
+	t.Logf("relay path in %s", took)
+
+	srv := serveEcho(t, b, "game")
+	eventually(t, 15*time.Second, "traffic through the relay", func() error { return talk(a, "game", srv, 3*time.Second) })
+	eventually(t, 15*time.Second, "panel knows the peers are relayed", func() error {
+		if p := e.svc.Paths(a.id.NodeID()); p.Relay != 1 || p.Direct != 0 {
+			return fmt.Errorf("paths %+v", p)
+		}
+		return nil
+	})
+	page := e.panelPage("/rooms/" + room.ID)
+	for _, want := range []string{"через relay: 1", "alice", "bob"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("room page misses %q", want)
+		}
+	}
+}
+
+// panelPage logs into the admin panel and returns the page body.
+func (e *env) panelPage(path string) string {
+	e.t.Helper()
+	jar, _ := cookiejar.New(nil)
+	c := &http.Client{Jar: jar}
+	res, err := c.PostForm(e.url+"/login", url.Values{"login": {"admin"}, "password": {"correct horse battery"}})
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	res.Body.Close()
+	res, err = c.Get(e.url + path)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	if res.StatusCode != http.StatusOK {
+		e.t.Fatalf("GET %s: %d\n%s", path, res.StatusCode, body)
+	}
+	return string(body)
 }

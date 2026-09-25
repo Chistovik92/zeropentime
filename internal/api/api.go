@@ -37,6 +37,24 @@ type Endpoints struct {
 	NAT string `json:"nat,omitempty"`
 	// PortMap is the external address the router forwards (UPnP / NAT-PMP).
 	PortMap netip.AddrPort `json:"portmap,omitzero"`
+	// DiscoKey is the node's public key for path discovery (package disco).
+	DiscoKey identity.Key `json:"disco_key,omitzero"`
+	// Relay is the relay the node has a session with ("host:port").
+	Relay string `json:"relay,omitempty"`
+	// Paths counts the node's peers reached directly and through a relay.
+	Paths PathStats `json:"paths,omitzero"`
+}
+
+// PathStats counts how a node reaches its peers.
+type PathStats struct {
+	Direct int `json:"direct"`
+	Relay  int `json:"relay"`
+}
+
+// Relay is a relay server nodes may use.
+type Relay struct {
+	Addr string       `json:"addr"` // host:port (UDP)
+	Key  identity.Key `json:"key"`
 }
 
 type JoinRequest struct {
@@ -73,6 +91,8 @@ type NetMap struct {
 	Peers      map[string]Peer `json:"peers"` // by node ID
 	// STUN servers ("host:port") the node should use to learn its address.
 	STUN []string `json:"stun,omitempty"`
+	// Relays forward traffic when no direct path works.
+	Relays []Relay `json:"relays,omitempty"`
 }
 
 type RoomState struct {
@@ -90,6 +110,8 @@ type Peer struct {
 	Reflexive []netip.AddrPort `json:"reflexive,omitempty"`
 	PortMap   netip.AddrPort   `json:"portmap,omitzero"`
 	NAT       string           `json:"nat,omitempty"`
+	DiscoKey  identity.Key     `json:"disco_key,omitzero"`
+	Relay     string           `json:"relay,omitempty"`
 	Online    bool             `json:"online"`
 }
 

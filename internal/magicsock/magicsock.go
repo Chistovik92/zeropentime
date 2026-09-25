@@ -20,6 +20,7 @@
 package magicsock
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -55,6 +56,11 @@ type Conn struct {
 
 	stunMu      sync.Mutex
 	stunPending map[stun.TxID]stunWait
+
+	disco atomic.Pointer[discoHandler]
+	relay atomic.Pointer[relayHook]
+
+	dropDirect atomic.Bool
 
 	closeOnce sync.Once
 	done      chan struct{}
@@ -149,17 +155,121 @@ func (c *Conn) readLoop() {
 			continue
 		}
 		pkt := buf[:n]
+		from := netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port())
 		if stun.Is(pkt) {
-			c.handleSTUN(pkt, netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port()))
+			c.handleSTUN(pkt, from)
 			continue
 		}
-		for _, b := range *c.rooms.Load() {
-			if b.tagger.Match(pkt) {
-				b.deliver(pkt[obfs.TagLen:], netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port()))
-				break
-			}
+		if r := c.relay.Load(); r != nil && from == r.addr {
+			r.handle(bytes.Clone(pkt))
+			continue
+		}
+		if c.dropDirect.Load() {
+			continue
+		}
+		c.dispatch(pkt, from)
+	}
+}
+
+// dispatch hands a packet (tunnel or disco) to its receiver. from is the
+// real sender address, or a relay endpoint for relayed packets.
+func (c *Conn) dispatch(pkt []byte, from netip.AddrPort) {
+	for _, b := range *c.rooms.Load() {
+		if b.tagger.Match(pkt) {
+			b.deliver(pkt[obfs.TagLen:], from)
+			return
 		}
 	}
+	if d := c.disco.Load(); d != nil && d.tagger.Match(pkt) {
+		d.fn(bytes.Clone(pkt), from)
+	}
+}
+
+// DropDirectForTests makes the socket ignore tunnel and disco packets that
+// do not come through the relay, emulating a NAT no hole can be punched in.
+// Tests only.
+func (c *Conn) DropDirectForTests(v bool) { c.dropDirect.Store(v) }
+
+// Relayed paths are shown to AmneziaWG as addresses in this private IPv6
+// range: the 80 bits after the prefix are the peer's node ID.
+var relayPrefix = netip.MustParsePrefix("fd7a:7a70:72ff::/48")
+
+// RelayEndpoint is the pseudo-address meaning "this node, via the relay".
+func RelayEndpoint(node [10]byte) netip.AddrPort {
+	var a [16]byte
+	p := relayPrefix.Addr().As16()
+	copy(a[:6], p[:6])
+	copy(a[6:], node[:])
+	return netip.AddrPortFrom(netip.AddrFrom16(a), 1)
+}
+
+// RelayNode returns the node ID of a relay endpoint.
+func RelayNode(ap netip.AddrPort) ([10]byte, bool) {
+	var n [10]byte
+	if !relayPrefix.Contains(ap.Addr()) {
+		return n, false
+	}
+	a := ap.Addr().As16()
+	copy(n[:], a[6:])
+	return n, true
+}
+
+// IsRelay reports whether the address is a relay endpoint.
+func IsRelay(ap netip.AddrPort) bool { return relayPrefix.Contains(ap.Addr()) }
+
+type relayHook struct {
+	addr   netip.AddrPort
+	handle func(pkt []byte)
+	send   func(dst [10]byte, payload []byte) error
+}
+
+// SetRelay routes datagrams from the relay address to handle, and sends to
+// relay endpoints through send. nil handle removes the relay.
+func (c *Conn) SetRelay(addr netip.AddrPort, handle func([]byte), send func([10]byte, []byte) error) {
+	if handle == nil {
+		c.relay.Store(nil)
+		return
+	}
+	c.relay.Store(&relayHook{addr: addr, handle: handle, send: send})
+}
+
+// Receive injects a packet that arrived through the relay from the node.
+func (c *Conn) Receive(pkt []byte, node [10]byte) {
+	c.dispatch(pkt, RelayEndpoint(node))
+}
+
+// write sends to a real address or through the relay.
+func (c *Conn) write(b []byte, to netip.AddrPort) error {
+	if node, ok := RelayNode(to); ok {
+		r := c.relay.Load()
+		if r == nil {
+			return errors.New("magicsock: no relay")
+		}
+		return r.send(node, b)
+	}
+	_, err := c.pc.WriteToUDPAddrPort(b, to)
+	return err
+}
+
+type discoHandler struct {
+	tagger *obfs.Tagger
+	fn     func(pkt []byte, from netip.AddrPort)
+}
+
+// SetDisco routes packets carrying the node's disco tag to fn. fn gets its
+// own copy of the packet and must not block for long.
+func (c *Conn) SetDisco(tagKey [16]byte, fn func(pkt []byte, from netip.AddrPort)) {
+	c.disco.Store(&discoHandler{tagger: obfs.NewTagger(tagKey), fn: fn})
+}
+
+// WriteTo sends a datagram to a real address or a relay endpoint (disco).
+func (c *Conn) WriteTo(b []byte, to netip.AddrPort) error { return c.write(b, to) }
+
+// WriteDirect sends a datagram on the socket, never through the relay
+// (used by the relay client itself).
+func (c *Conn) WriteDirect(b []byte, to netip.AddrPort) error {
+	_, err := c.pc.WriteToUDPAddrPort(b, to)
+	return err
 }
 
 type stunWait struct {
@@ -323,7 +433,7 @@ func (b *roomBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 		}
 		b.tagger.Put(out)
 		n := copy(out[obfs.TagLen:], pkt)
-		if _, err := b.c.pc.WriteToUDPAddrPort(out[:obfs.TagLen+n], e.AddrPort); err != nil {
+		if err := b.c.write(out[:obfs.TagLen+n], e.AddrPort); err != nil {
 			return err
 		}
 	}
