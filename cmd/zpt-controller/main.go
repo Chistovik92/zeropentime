@@ -14,18 +14,22 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Chistovik92/zeropentime/internal/controller"
 	"github.com/Chistovik92/zeropentime/internal/store"
 )
 
-var version = "0.2.1-dev"
+var version = "0.2.2-dev"
 
 const usage = `zpt-controller — контроллер zeropentime (админ-панель + API для узлов)
 
   zpt-controller serve   -db ФАЙЛ [-listen :8080] [-url https://...] [-tls-cert Ф -tls-key Ф] [-trust-proxy]
-                         [-stun :3478,:3479] [-stun-public host:3478,host:3479]
+                         [-stun :3478,:3479] [-stun-public host:3478,host:3479] [-relay :3480] [-relay-public host:3480]
   zpt-controller useradd -db ФАЙЛ -login ЛОГИН [-admin]
+  zpt-controller room create   -db ФАЙЛ -owner ЛОГИН -name ИМЯ [-subnet 10.100.1.0/24] [-policy manual|auto]
+  zpt-controller room list     -db ФАЙЛ
+  zpt-controller invite create -db ФАЙЛ -room ID -url https://... [-uses 1] [-hours 24] [-auto] [-note ТЕКСТ]
   zpt-controller passwd  -db ФАЙЛ -login ЛОГИН
   zpt-controller version
 `
@@ -53,6 +57,8 @@ func run(sub string, args []string) error {
 		trust := fl.Bool("trust-proxy", false, "доверять X-Forwarded-For/-Proto от обратного прокси")
 		stunListen := fl.String("stun", ":3478,:3479", "UDP-адреса встроенного STUN-сервера через запятую (два порта нужны для определения симметричного NAT); пусто — выключить")
 		stunPublic := fl.String("stun-public", "", "STUN-адреса для узлов (host:port через запятую); по умолчанию — хост из -url с портами из -stun")
+		relayListen := fl.String("relay", ":3480", "UDP-адрес встроенного relay (пересылка, когда прямой путь не работает); пусто — выключить")
+		relayPublic := fl.String("relay-public", "", "адрес relay для узлов (host:port); по умолчанию — хост из -url с портом из -relay")
 		level := fl.String("log-level", "info", "debug|info|warn|error")
 		fl.Parse(args)
 		var l slog.Level
@@ -68,6 +74,7 @@ func run(sub string, args []string) error {
 		srv, err := controller.NewServer(controller.Config{
 			Listen: *listen, PublicURL: strings.TrimRight(*pub, "/"), TLSCert: *cert, TLSKey: *key, TrustProxy: *trust,
 			STUNListen: splitList(*stunListen), STUNPublic: splitList(*stunPublic),
+			RelayListen: *relayListen, RelayPublic: *relayPublic,
 		}, svc, log)
 		if err != nil {
 			return err
@@ -104,6 +111,8 @@ func run(sub string, args []string) error {
 		}
 		fmt.Printf("новый пароль для %s: %s\n", *login, pw)
 		return nil
+	case "room", "invite":
+		return runAdmin(sub, args)
 	case "version":
 		fmt.Println("zpt-controller", version)
 		return nil
@@ -112,6 +121,80 @@ func run(sub string, args []string) error {
 		return nil
 	}
 	return errors.New("неизвестная команда " + sub + "\n\n" + usage)
+}
+
+// runAdmin handles "room ..." and "invite ..." for scripts and automation.
+// It works on the database directly, also while the server is running.
+func runAdmin(sub string, args []string) error {
+	if len(args) == 0 {
+		return errors.New("использование:\n" + usage)
+	}
+	action, args := args[0], args[1:]
+	fl := flag.NewFlagSet(sub+" "+action, flag.ExitOnError)
+	db := fl.String("db", "zpt-controller.db", "файл базы данных")
+	ctx := context.Background()
+	switch sub + " " + action {
+	case "room create":
+		owner := fl.String("owner", "", "логин владельца комнаты")
+		name := fl.String("name", "", "название комнаты")
+		subnet := fl.String("subnet", "", "подсеть (по умолчанию выбирается сама)")
+		policy := fl.String("policy", "manual", "вступление: manual (с одобрением) или auto")
+		fl.Parse(args)
+		svc, closeDB, err := openService(*db, slog.New(slog.DiscardHandler))
+		if err != nil {
+			return err
+		}
+		defer closeDB()
+		u, err := svc.UserByLogin(ctx, *owner)
+		if err != nil {
+			return fmt.Errorf("пользователь %q не найден", *owner)
+		}
+		r, err := svc.CreateRoom(ctx, u, *name, *subnet, *policy)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("room id: %s\nsubnet:  %s\n", r.ID, r.Subnet)
+		return nil
+	case "room list":
+		fl.Parse(args)
+		svc, closeDB, err := openService(*db, slog.New(slog.DiscardHandler))
+		if err != nil {
+			return err
+		}
+		defer closeDB()
+		rooms, err := svc.Rooms(ctx, &store.User{IsAdmin: true})
+		if err != nil {
+			return err
+		}
+		for _, r := range rooms {
+			fmt.Printf("%s  %-18s  %s\n", r.ID, r.Subnet, r.Name)
+		}
+		return nil
+	case "invite create":
+		room := fl.String("room", "", "ID комнаты")
+		pub := fl.String("url", "", "внешний адрес контроллера, например https://zpt.example.org")
+		uses := fl.Int("uses", 1, "сколько раз можно использовать (0 — без ограничений)")
+		hours := fl.Int("hours", 24, "срок действия, часов")
+		auto := fl.Bool("auto", false, "вступление без одобрения")
+		note := fl.String("note", "", "заметка")
+		fl.Parse(args)
+		if *pub == "" {
+			return errors.New("нужен -url: по нему узлы найдут контроллер")
+		}
+		svc, closeDB, err := openService(*db, slog.New(slog.DiscardHandler))
+		if err != nil {
+			return err
+		}
+		defer closeDB()
+		inv, err := svc.CreateInvite(ctx, &store.User{IsAdmin: true, Login: "cli"}, strings.TrimRight(*pub, "/"), *room,
+			*uses, time.Duration(*hours)*time.Hour, *auto, *note)
+		if err != nil {
+			return err
+		}
+		fmt.Println(inv.String())
+		return nil
+	}
+	return fmt.Errorf("неизвестная команда %s %s", sub, action)
 }
 
 func splitList(s string) []string {
