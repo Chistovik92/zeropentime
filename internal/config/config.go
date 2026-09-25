@@ -5,7 +5,6 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -156,66 +155,72 @@ func DefaultKeyPath() string {
 	return "/var/lib/zeropentime/node.key"
 }
 
-// Validate checks the config and fills defaults.
+// Validate checks the config and fills defaults. A config without rooms is
+// valid: rooms may come from controllers ("zpt join").
 func (c *Config) Validate() error {
 	if p := c.Port(); p < 0 || p > 65535 {
 		return fmt.Errorf("listen_port %d out of range", p)
-	}
-	if len(c.Rooms) == 0 {
-		return errors.New("no rooms configured")
 	}
 	names := map[string]bool{}
 	secrets := map[obfs.Secret]bool{}
 	var prefixes []netip.Prefix
 	for i := range c.Rooms {
 		r := &c.Rooms[i]
-		if !roomNameRe.MatchString(r.Name) {
-			return fmt.Errorf("room %q: name must be 1-11 chars of a-z, 0-9, '-'", r.Name)
+		if err := r.ValidateRoom(); err != nil {
+			return err
 		}
 		if names[r.Name] {
 			return fmt.Errorf("room %q: duplicate name", r.Name)
 		}
 		names[r.Name] = true
-		if r.Secret.IsZero() {
-			return fmt.Errorf("room %q: secret is required (generate one with \"zpt room new\")", r.Name)
-		}
 		if secrets[r.Secret] {
 			return fmt.Errorf("room %q: secret already used by another room", r.Name)
 		}
 		secrets[r.Secret] = true
-		if cp := r.ClientParams(); cp.Jc < 0 || cp.Jc > 128 || cp.Jmin < 0 || cp.Jmin > cp.Jmax || cp.Jmax > 1280 {
-			return fmt.Errorf("room %q: obfuscation needs 0 <= jc <= 128 and 0 <= jmin <= jmax <= 1280", r.Name)
-		}
-		if !r.Address.IsValid() {
-			return fmt.Errorf("room %q: address is required, e.g. 10.100.1.1/24", r.Name)
-		}
 		for _, p := range prefixes {
 			if p.Overlaps(r.Address.Masked()) {
 				return fmt.Errorf("room %q: subnet %s overlaps another room (%s)", r.Name, r.Address.Masked(), p)
 			}
 		}
 		prefixes = append(prefixes, r.Address.Masked())
-		if r.MTU == 0 {
-			r.MTU = DefaultMTU
+	}
+	return nil
+}
+
+// ValidateRoom checks one room on its own and fills its defaults.
+func (r *Room) ValidateRoom() error {
+	if !roomNameRe.MatchString(r.Name) {
+		return fmt.Errorf("room %q: name must be 1-11 chars of a-z, 0-9, '-'", r.Name)
+	}
+	if r.Secret.IsZero() {
+		return fmt.Errorf("room %q: secret is required (generate one with \"zpt room new\")", r.Name)
+	}
+	if cp := r.ClientParams(); cp.Jc < 0 || cp.Jc > 128 || cp.Jmin < 0 || cp.Jmin > cp.Jmax || cp.Jmax > 1280 {
+		return fmt.Errorf("room %q: obfuscation needs 0 <= jc <= 128 and 0 <= jmin <= jmax <= 1280", r.Name)
+	}
+	if !r.Address.IsValid() {
+		return fmt.Errorf("room %q: address is required, e.g. 10.100.1.1/24", r.Name)
+	}
+	if r.MTU == 0 {
+		r.MTU = DefaultMTU
+	}
+	if r.MTU < MinMTU || r.MTU > MaxMTU {
+		return fmt.Errorf("room %q: mtu must be %d-%d", r.Name, MinMTU, MaxMTU)
+	}
+	keys := map[identity.Key]bool{}
+	for j, p := range r.Peers {
+		if p.PublicKey.IsZero() {
+			return fmt.Errorf("room %q peer #%d: public_key is required", r.Name, j+1)
 		}
-		if r.MTU < MinMTU || r.MTU > MaxMTU {
-			return fmt.Errorf("room %q: mtu must be %d-%d", r.Name, MinMTU, MaxMTU)
+		if keys[p.PublicKey] {
+			return fmt.Errorf("room %q peer %q: duplicate public_key", r.Name, p.Name)
 		}
-		keys := map[identity.Key]bool{}
-		for j, p := range r.Peers {
-			if p.PublicKey.IsZero() {
-				return fmt.Errorf("room %q peer #%d: public_key is required", r.Name, j+1)
-			}
-			if keys[p.PublicKey] {
-				return fmt.Errorf("room %q peer %q: duplicate public_key", r.Name, p.Name)
-			}
-			keys[p.PublicKey] = true
-			if len(p.AllowedIPs) == 0 {
-				return fmt.Errorf("room %q peer %q: allowed_ips is required", r.Name, p.Name)
-			}
-			if p.Keepalive < 0 || p.Keepalive > 65535 {
-				return fmt.Errorf("room %q peer %q: keepalive out of range", r.Name, p.Name)
-			}
+		keys[p.PublicKey] = true
+		if len(p.AllowedIPs) == 0 {
+			return fmt.Errorf("room %q peer %q: allowed_ips is required", r.Name, p.Name)
+		}
+		if p.Keepalive < 0 || p.Keepalive > 65535 {
+			return fmt.Errorf("room %q peer %q: keepalive out of range", r.Name, p.Name)
 		}
 	}
 	return nil

@@ -2,6 +2,7 @@ package room
 
 import (
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/amnezia-vpn/amneziawg-go/conn"
@@ -25,6 +26,7 @@ func TestDerivedProfilesAcceptedByAmneziaWG(t *testing.T) {
 
 	id, _ := identity.Generate()
 	peer, _ := identity.Generate()
+	psk := strings.Repeat("ab", 32)
 	for range 300 {
 		s, err := obfs.NewSecret()
 		if err != nil {
@@ -36,8 +38,32 @@ func TestDerivedProfilesAcceptedByAmneziaWG(t *testing.T) {
 			Name: "t", Secret: s, Address: netip.MustParsePrefix("10.9.0.1/24"), MTU: config.DefaultMTU,
 			Peers: []config.Peer{{PublicKey: peerKey.Public(), Endpoint: "127.0.0.1:1", AllowedIPs: []netip.Prefix{netip.MustParsePrefix("10.9.0.2/32")}}},
 		}
-		if err := dev.IpcSet(uapiConfig(rc, key)); err != nil {
-			t.Fatalf("secret %s: %v\n%s", s, err, uapiConfig(rc, key))
+		peers, _ := peersDiff(nil, rc.Peers, psk)
+		uapi := deviceConfig(rc, key) + "replace_peers=true\n" + peers
+		if err := dev.IpcSet(uapi); err != nil {
+			t.Fatalf("secret %s: %v\n%s", s, err, uapi)
 		}
+	}
+}
+
+func TestPeersDiff(t *testing.T) {
+	k1, k2 := identity.Key{1}, identity.Key{2}
+	ip := func(s string) []netip.Prefix { return []netip.Prefix{netip.MustParsePrefix(s)} }
+	a := config.Peer{PublicKey: k1, Endpoint: "1.1.1.1:1", AllowedIPs: ip("10.0.0.1/32"), Keepalive: 25}
+	b := config.Peer{PublicKey: k2, Endpoint: "2.2.2.2:2", AllowedIPs: ip("10.0.0.2/32"), Keepalive: 25}
+
+	uapi, cur := peersDiff(nil, []config.Peer{a, b}, "psk")
+	if strings.Count(uapi, "public_key=") != 2 || strings.Count(uapi, "preshared_key=psk") != 2 {
+		t.Fatalf("initial config:\n%s", uapi)
+	}
+	if uapi, _ := peersDiff(cur, []config.Peer{a, b}, "psk"); uapi != "" {
+		t.Fatalf("no-op update produced config:\n%s", uapi)
+	}
+	b2 := b
+	b2.AllowedIPs = ip("10.0.0.3/32")
+	uapi, _ = peersDiff(cur, []config.Peer{b2}, "psk")
+	if strings.Contains(uapi, "endpoint=") || strings.Contains(uapi, "preshared_key") ||
+		!strings.Contains(uapi, "allowed_ip=10.0.0.3/32") || !strings.Contains(uapi, "remove=true") {
+		t.Fatalf("diff should change b's ips and remove a, without touching b's session:\n%s", uapi)
 	}
 }

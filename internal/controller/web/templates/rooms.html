@@ -1,0 +1,38 @@
+{{define "content"}}
+<h1>Комнаты</h1>
+<section class="card">
+  {{if .Data}}
+  <table>
+    <thead><tr><th>Название</th><th>Подсеть</th><th>Вступление</th><th>Создана</th></tr></thead>
+    <tbody>
+    {{range .Data}}
+      <tr>
+        <td><a href="/rooms/{{.ID}}">{{.Name}}</a></td>
+        <td class="mono">{{.Subnet}}</td>
+        <td>{{if eq .JoinPolicy "auto"}}автоматически{{else}}с одобрением{{end}}</td>
+        <td>{{date .CreatedAt}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="muted">Комнат пока нет. Создайте первую — это ваша виртуальная локальная сеть.</p>
+  {{end}}
+</section>
+
+<section class="card">
+  <h2>Новая комната</h2>
+  <form method="post" action="/rooms" class="grid">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>Название <input name="name" maxlength="40" required placeholder="Игры с друзьями"></label>
+    <label>Подсеть <input name="subnet" placeholder="авто, например 10.100.1.0/24"></label>
+    <label>Вступление
+      <select name="policy">
+        <option value="manual">с одобрением админа</option>
+        <option value="auto">автоматически по приглашению</option>
+      </select>
+    </label>
+    <div><button>Создать</button></div>
+  </form>
+</section>
+{{end}}

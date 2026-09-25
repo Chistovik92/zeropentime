@@ -59,7 +59,6 @@ func TestValidateErrors(t *testing.T) {
 	s, _ := obfs.NewSecret()
 	sec := s.String()
 	cases := map[string]string{
-		"no rooms":        `rooms: []`,
 		"bad name":        "rooms: [{name: Game!, secret: " + sec + ", address: 10.1.0.1/24}]",
 		"no secret":       "rooms: [{name: a, address: 10.1.0.1/24}]",
 		"same secret":     "rooms: [{name: a, secret: " + sec + ", address: 10.1.0.1/24}, {name: b, secret: " + sec + ", address: 10.2.0.1/24}]",

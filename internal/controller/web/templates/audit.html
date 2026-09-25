@@ -1,0 +1,13 @@
+{{define "content"}}
+<h1>Журнал действий</h1>
+<section class="card">
+  <table>
+    <thead><tr><th>Время</th><th>Кто</th><th>Действие</th><th>Объект</th><th>Подробности</th></tr></thead>
+    <tbody>
+    {{range .Data}}
+      <tr><td class="small">{{date .Time}}</td><td>{{.Actor}}</td><td class="mono small">{{.Action}}</td><td class="mono small">{{.Target}}</td><td class="small">{{.Details}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}

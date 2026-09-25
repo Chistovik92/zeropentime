@@ -1,0 +1,13 @@
+{{define "content"}}
+<h1>Мой аккаунт</h1>
+<section class="card narrow">
+  <h2>Смена пароля</h2>
+  <form method="post" action="/account/password" class="stack">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>Текущий пароль <input name="old" type="password" autocomplete="current-password" required></label>
+    <label>Новый пароль <input name="new" type="password" autocomplete="new-password" minlength="10" required></label>
+    <label>Ещё раз <input name="new2" type="password" autocomplete="new-password" minlength="10" required></label>
+    <button>Сменить</button>
+  </form>
+</section>
+{{end}}

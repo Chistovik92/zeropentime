@@ -1,0 +1,384 @@
+// Package e2e runs a controller and several nodes in one process (userspace
+// network stacks, real UDP on loopback) and checks the phase 1 scenarios.
+package e2e
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http/httptest"
+	"net/netip"
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/Chistovik92/zeropentime/internal/api"
+	"github.com/Chistovik92/zeropentime/internal/client"
+	"github.com/Chistovik92/zeropentime/internal/config"
+	"github.com/Chistovik92/zeropentime/internal/controller"
+	"github.com/Chistovik92/zeropentime/internal/identity"
+	"github.com/Chistovik92/zeropentime/internal/node"
+	"github.com/Chistovik92/zeropentime/internal/store"
+)
+
+var quiet = slog.New(slog.DiscardHandler)
+
+// logBuf collects debug logs in memory and prints them only if the test fails.
+type logBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *logBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func testLogger(t *testing.T) *slog.Logger {
+	lb := &logBuf{}
+	t.Cleanup(func() {
+		if t.Failed() {
+			lb.mu.Lock()
+			defer lb.mu.Unlock()
+			os.WriteFile(filepath.Join(os.TempDir(), "zpt-e2e-"+t.Name()+".log"), lb.buf.Bytes(), 0o600)
+			t.Logf("debug log: %s", filepath.Join(os.TempDir(), "zpt-e2e-"+t.Name()+".log"))
+		}
+	})
+	return slog.New(slog.NewTextHandler(lb, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+type env struct {
+	t     *testing.T
+	svc   *controller.Service
+	log   *slog.Logger
+	url   string
+	admin *store.User
+}
+
+func newEnv(t *testing.T) *env {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "ctl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	svc, err := controller.NewService(st, quiet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := controller.NewServer(controller.Config{}, svc, quiet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := httptest.NewServer(srv.Handler())
+	t.Cleanup(hs.Close)
+
+	ctx := context.Background()
+	if err := svc.CreateUser(ctx, nil, "admin", "correct horse battery", true); err != nil {
+		t.Fatal(err)
+	}
+	tok, err := svc.Login(ctx, "admin", "correct horse battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, _, err := svc.Session(ctx, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &env{t: t, svc: svc, log: testLogger(t), url: hs.URL, admin: admin}
+}
+
+func (e *env) room(name, policy string) *store.Room {
+	r, err := e.svc.CreateRoom(context.Background(), e.admin, name, "", policy)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return r
+}
+
+func (e *env) invite(roomID string, uses int, auto bool) api.Invite {
+	inv, err := e.svc.CreateInvite(context.Background(), e.admin, e.url, roomID, uses, time.Hour, auto, "")
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return inv
+}
+
+type testNode struct {
+	id    *identity.Identity
+	state string
+	node  *node.Node
+}
+
+func (e *env) node(name string) *testNode {
+	e.t.Helper()
+	id, _ := identity.Generate()
+	dir := e.t.TempDir()
+	port := 0
+	cfg := &config.Config{ListenPort: &port, Userspace: true}
+	if err := cfg.Validate(); err != nil {
+		e.t.Fatal(err)
+	}
+	tn := &testNode{id: id, state: filepath.Join(dir, "state.json")}
+	n, err := node.Start(node.Options{
+		Config: cfg, Identity: id, Log: e.log.With("node", name), StatePath: tn.state, Version: "test",
+		LocalEndpoints: func(uint16, []netip.Prefix) []netip.AddrPort { return nil },
+	})
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	e.t.Cleanup(func() { n.Close() })
+	tn.node = n
+	return tn
+}
+
+// join does what "zpt join" does.
+func (e *env) join(tn *testNode, inv api.Invite, name string) (*api.JoinResponse, error) {
+	resp, err := client.New(inv.Controller, tn.id, "test").Join(context.Background(), inv, name, api.Endpoints{UDPPort: tn.node.Port()})
+	if err != nil {
+		return nil, err
+	}
+	st, err := node.LoadState(tn.state)
+	if err != nil {
+		return nil, err
+	}
+	st.Pin(inv.Controller, inv.RoomID, inv.RoomKey)
+	return resp, st.Save(tn.state)
+}
+
+func (e *env) mustJoin(tn *testNode, inv api.Invite, name, wantStatus string) {
+	e.t.Helper()
+	resp, err := e.join(tn, inv, name)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	if resp.Status != wantStatus {
+		e.t.Fatalf("%s: status %q, want %q", name, resp.Status, wantStatus)
+	}
+}
+
+func (e *env) act(roomID string, tn *testNode, a controller.MemberAction) {
+	e.t.Helper()
+	if err := e.svc.MemberAction(context.Background(), e.admin, roomID, tn.id.NodeID(), a); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+func eventually(t *testing.T, timeout time.Duration, what string, fn func() error) time.Duration {
+	t.Helper()
+	start := time.Now()
+	var err error
+	for time.Since(start) < timeout {
+		if err = fn(); err == nil {
+			return time.Since(start)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("%s: not reached in %s: %v", what, timeout, err)
+	return 0
+}
+
+func hasRoom(tn *testNode, name string, peers int) func() error {
+	return func() error {
+		r, err := tn.node.Room(name)
+		if err != nil {
+			return err
+		}
+		stats, _ := r.Stats()
+		if got := bytes.Count([]byte(stats), []byte("public_key=")); got != peers {
+			return fmt.Errorf("room %s has %d peers, want %d", name, got, peers)
+		}
+		return nil
+	}
+}
+
+func noRoom(tn *testNode, name string) func() error {
+	return func() error {
+		if _, err := tn.node.Room(name); err == nil {
+			return errors.New("room still running")
+		}
+		return nil
+	}
+}
+
+func serveEcho(t *testing.T, tn *testNode, roomName string) netip.AddrPort {
+	t.Helper()
+	r, err := tn.node.Room(roomName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := r.Net.ListenTCP(&net.TCPAddr{IP: r.Address.Addr().AsSlice(), Port: 7000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() { defer c.Close(); io.Copy(c, c) }()
+		}
+	}()
+	return netip.AddrPortFrom(r.Address.Addr(), 7000)
+}
+
+func talk(tn *testNode, roomName string, dst netip.AddrPort, timeout time.Duration) error {
+	r, err := tn.node.Room(roomName)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	c, err := r.Net.DialContextTCPAddrPort(ctx, dst)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(timeout))
+	msg := []byte("hello through the room")
+	if _, err := c.Write(msg); err != nil {
+		return err
+	}
+	got := make([]byte, len(msg))
+	if _, err := io.ReadFull(c, got); err != nil {
+		return err
+	}
+	if !bytes.Equal(got, msg) {
+		return errors.New("echo mismatch")
+	}
+	return nil
+}
+
+// Phase 1 demo: create a room, invite three nodes, approve them, talk,
+// kick one and see it disappear everywhere within 5 seconds.
+func TestInviteApproveTalkKick(t *testing.T) {
+	e := newEnv(t)
+	game := e.room("Игры", "manual")
+	inv := e.invite(game.ID, 3, false)
+
+	a, b, c := e.node("a"), e.node("b"), e.node("c")
+	e.mustJoin(a, inv, "alice", "pending")
+	e.mustJoin(b, inv, "bob", "pending")
+	e.mustJoin(c, inv, "carol", "pending")
+
+	// Pending members get nothing.
+	time.Sleep(time.Second)
+	if _, err := a.node.Room("igry"); err == nil {
+		t.Fatal("room started before approval")
+	}
+
+	for _, n := range []*testNode{a, b, c} {
+		e.act(game.ID, n, controller.ActApprove)
+	}
+	for _, n := range []*testNode{a, b, c} {
+		eventually(t, 10*time.Second, "room with 2 peers", hasRoom(n, "igry", 2))
+	}
+
+	srv := serveEcho(t, a, "igry")
+	eventually(t, 10*time.Second, "b talks to a", func() error { return talk(b, "igry", srv, 3*time.Second) })
+	eventually(t, 10*time.Second, "c talks to a", func() error { return talk(c, "igry", srv, 3*time.Second) })
+
+	// The invite had 3 uses: a fourth node is refused.
+	if _, err := e.join(e.node("d"), inv, "dave"); !client.IsForbidden(err) {
+		t.Fatalf("used-up invite accepted: %v", err)
+	}
+
+	e.act(game.ID, c, controller.ActKick)
+	took := eventually(t, 5*time.Second, "kicked node loses the room", noRoom(c, "igry"))
+	eventually(t, 5*time.Second, "others drop the kicked peer", func() error {
+		if err := hasRoom(a, "igry", 1)(); err != nil {
+			return err
+		}
+		return hasRoom(b, "igry", 1)()
+	})
+	t.Logf("kick propagated in %s", took)
+	if err := talk(b, "igry", srv, 3*time.Second); err != nil {
+		t.Fatalf("remaining members lost connectivity after kick: %v", err)
+	}
+}
+
+// One node in two rooms from the same controller; a banned node cannot
+// come back with a fresh invite.
+func TestTwoRoomsAndBan(t *testing.T) {
+	e := newEnv(t)
+	game := e.room("game", "auto")
+	work := e.room("work", "manual")
+
+	a, b := e.node("a"), e.node("b")
+	e.mustJoin(a, e.invite(game.ID, 0, false), "alice", "active") // auto room
+	e.mustJoin(b, e.invite(game.ID, 0, false), "bob", "active")
+	e.mustJoin(a, e.invite(work.ID, 1, true), "alice", "active") // auto-approve invite
+	e.mustJoin(b, e.invite(work.ID, 1, true), "bob", "active")
+
+	for _, n := range []*testNode{a, b} {
+		eventually(t, 10*time.Second, "game", hasRoom(n, "game", 1))
+		eventually(t, 10*time.Second, "work", hasRoom(n, "work", 1))
+	}
+	gameSrv := serveEcho(t, a, "game")
+	workSrv := serveEcho(t, a, "work")
+	eventually(t, 10*time.Second, "game traffic", func() error { return talk(b, "game", gameSrv, 3*time.Second) })
+	eventually(t, 10*time.Second, "work traffic", func() error { return talk(b, "work", workSrv, 3*time.Second) })
+
+	e.act(work.ID, b, controller.ActBan)
+	eventually(t, 5*time.Second, "banned node loses work", noRoom(b, "work"))
+	if err := talk(b, "game", gameSrv, 3*time.Second); err != nil {
+		t.Fatalf("ban in one room broke another room: %v", err)
+	}
+	if _, err := e.join(b, e.invite(work.ID, 1, true), "bob"); !client.IsForbidden(err) {
+		t.Fatalf("banned node rejoined: %v", err)
+	}
+}
+
+// If the room key pinned from the invite does not match the key the
+// configs are signed with (e.g. a forged or swapped controller), the node
+// must refuse to start the room.
+func TestWrongPinnedKeyRejected(t *testing.T) {
+	e := newEnv(t)
+	room := e.room("game", "auto")
+	other := e.room("other", "auto")
+
+	a := e.node("a")
+	inv := e.invite(room.ID, 1, false)
+	inv.RoomKey = e.invite(other.ID, 1, false).RoomKey // pin the wrong key
+	e.mustJoin(a, inv, "alice", "active")
+
+	time.Sleep(2 * time.Second)
+	if len(a.node.Rooms()) != 0 {
+		t.Fatal("node started a room whose config is signed by an unpinned key")
+	}
+}
+
+// Regression: "zpt join" pins the room key after the controller already
+// pushed the netmap that contains the room. The daemon must still start it.
+func TestPinAfterNetmapArrived(t *testing.T) {
+	e := newEnv(t)
+	room := e.room("late", "auto")
+	a := e.node("a")
+	// Follow the controller through another room so a syncer is running.
+	e.mustJoin(a, e.invite(e.room("first", "auto").ID, 1, false), "alice", "active")
+	eventually(t, 10*time.Second, "first room", hasRoom(a, "first", 0))
+
+	inv := e.invite(room.ID, 1, false)
+	if _, err := client.New(inv.Controller, a.id, "test").Join(context.Background(), inv, "alice", api.Endpoints{UDPPort: a.node.Port()}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1500 * time.Millisecond) // the netmap with "late" arrives and is skipped: not pinned yet
+	if _, err := a.node.Room("late"); err == nil {
+		t.Fatal("room started without a pinned key")
+	}
+	st, _ := node.LoadState(a.state)
+	st.Pin(inv.Controller, inv.RoomID, inv.RoomKey)
+	if err := st.Save(a.state); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 5*time.Second, "room starts after pinning", hasRoom(a, "late", 0))
+}

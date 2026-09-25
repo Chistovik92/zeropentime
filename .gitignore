@@ -2,4 +2,9 @@
 /zpt.exe
 /dist/
 *.key
+*.db
+*.db-shm
+*.db-wal
+state.json
 wintun.dll
+.claude/

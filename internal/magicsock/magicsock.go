@@ -86,6 +86,22 @@ func (c *Conn) Bind(tagKey [16]byte) (conn.Bind, error) {
 	return b, nil
 }
 
+// Unbind removes a room. Its bind stops receiving packets.
+func (c *Conn) Unbind(tagKey [16]byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	old := *c.rooms.Load()
+	rooms := make([]*roomBind, 0, len(old))
+	for _, b := range old {
+		if b.key == tagKey {
+			b.Close()
+			continue
+		}
+		rooms = append(rooms, b)
+	}
+	c.rooms.Store(&rooms)
+}
+
 // Close closes the socket and all room binds.
 func (c *Conn) Close() error {
 	var err error

@@ -159,7 +159,7 @@ func start(t *testing.T, id *identity.Identity, rooms []config.Room) *Node {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	n, err := Start(cfg, id, testLog)
+	n, err := Start(Options{Config: cfg, Identity: id, Log: testLog})
 	if err != nil {
 		t.Fatal(err)
 	}

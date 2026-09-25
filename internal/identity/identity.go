@@ -82,11 +82,7 @@ func (id *Identity) PublicKey() ed25519.PublicKey {
 }
 
 // NodeID is a short stable identifier derived from the public key.
-func (id *Identity) NodeID() string {
-	sum := blake2s.Sum256(id.PublicKey())
-	enc := base32.StdEncoding.WithPadding(base32.NoPadding)
-	return strings.ToLower(enc.EncodeToString(sum[:10]))
-}
+func (id *Identity) NodeID() string { return NodeIDFromPublic(id.PublicKey()) }
 
 // RoomKey derives the AmneziaWG private key this node uses in the room with
 // the given room ID (see obfs.Secret.RoomID).
@@ -99,6 +95,28 @@ func (id *Identity) RoomKey(roomID string) (Key, error) {
 	copy(k[:], b)
 	k.clamp()
 	return k, nil
+}
+
+// Sign signs msg with the node's Ed25519 key.
+func (id *Identity) Sign(msg []byte) []byte { return ed25519.Sign(id.priv, msg) }
+
+// BoxKey derives the X25519 key pair controllers use to encrypt responses
+// to this node (NaCl sealed boxes), so secrets stay private even without TLS.
+func (id *Identity) BoxKey() (priv, pub Key) {
+	b, err := hkdf.Key(sha256.New, id.priv.Seed(), []byte(wgKeySalt), "controller-box", KeyLen)
+	if err != nil {
+		panic(err)
+	}
+	copy(priv[:], b)
+	priv.clamp()
+	return priv, priv.Public()
+}
+
+// NodeIDFromPublic computes the NodeID for an Ed25519 public key.
+func NodeIDFromPublic(pub ed25519.PublicKey) string {
+	sum := blake2s.Sum256(pub)
+	enc := base32.StdEncoding.WithPadding(base32.NoPadding)
+	return strings.ToLower(enc.EncodeToString(sum[:10]))
 }
 
 // KeyLen is the size of a WireGuard key.

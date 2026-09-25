@@ -1,0 +1,29 @@
+{{define "content"}}
+{{$csrf := .CSRF}}{{$me := .User}}
+<h1>Пользователи</h1>
+<section class="card">
+  <table>
+    <thead><tr><th>Логин</th><th>Роль</th><th>Создан</th><th></th></tr></thead>
+    <tbody>
+    {{range .Data}}
+      <tr>
+        <td>{{.Login}}</td>
+        <td>{{if .IsAdmin}}администратор{{else}}пользователь{{end}}</td>
+        <td>{{date .Created}}</td>
+        <td>{{if ne .ID $me.ID}}<form method="post" action="/users/{{.ID}}/delete" class="inline" data-confirm="Удалить пользователя {{.Login}}?"><input type="hidden" name="csrf" value="{{$csrf}}"><button class="small danger">Удалить</button></form>{{end}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+<section class="card">
+  <h2>Новый пользователь</h2>
+  <p class="muted">Пароль будет сгенерирован и показан один раз.</p>
+  <form method="post" action="/users" class="grid">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <label>Логин <input name="login" required maxlength="32" pattern="[a-zA-Z0-9._\-]{2,32}"></label>
+    <label class="check"><input type="checkbox" name="admin"> Администратор</label>
+    <div><button>Создать</button></div>
+  </form>
+</section>
+{{end}}

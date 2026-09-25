@@ -1,0 +1,11 @@
+{{define "content"}}
+<section class="card narrow">
+  <h1>zeropentime</h1>
+  <p class="muted">Вход в панель управления</p>
+  <form method="post" action="/login" class="stack">
+    <label>Логин <input name="login" autocomplete="username" required autofocus></label>
+    <label>Пароль <input name="password" type="password" autocomplete="current-password" required></label>
+    <button>Войти</button>
+  </form>
+</section>
+{{end}}

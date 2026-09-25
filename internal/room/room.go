@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"net/netip"
 	"runtime"
+	"slices"
 	"strings"
+	"sync"
 
 	"github.com/amnezia-vpn/amneziawg-go/conn"
 	"github.com/amnezia-vpn/amneziawg-go/device"
@@ -28,6 +30,11 @@ type Room struct {
 
 	ifname string
 	dev    *device.Device
+	log    *slog.Logger
+	psk    string
+
+	mu    sync.Mutex
+	peers map[identity.Key]config.Peer // as last configured
 }
 
 // Options configure Up.
@@ -43,7 +50,8 @@ type Options struct {
 func Up(o Options) (_ *Room, err error) {
 	c := o.Config
 	log := o.Log.With("room", c.Name)
-	r := &Room{Name: c.Name, Address: c.Address}
+	prof := c.Secret.Derive()
+	r := &Room{Name: c.Name, Address: c.Address, log: log, psk: hex.EncodeToString(prof.PresharedKey[:]), peers: map[identity.Key]config.Peer{}}
 
 	var tdev tun.Device
 	if o.Userspace {
@@ -77,8 +85,14 @@ func Up(o Options) (_ *Room, err error) {
 			r.dev.Close() // also closes tdev
 		}
 	}()
-	if err := r.dev.IpcSet(uapiConfig(c, o.Key)); err != nil {
+	var b strings.Builder
+	fmt.Fprintf(&b, "private_key=%s\n", hex.EncodeToString(o.Key[:]))
+	b.WriteString(prof.DeviceUAPI(c.ClientParams()))
+	if err := r.dev.IpcSet(b.String()); err != nil {
 		return nil, fmt.Errorf("room %s: configure AmneziaWG: %w", c.Name, err)
+	}
+	if err := r.SetPeers(c.Peers); err != nil {
+		return nil, err
 	}
 	if err := r.dev.Up(); err != nil {
 		return nil, fmt.Errorf("room %s: up: %w", c.Name, err)
@@ -87,29 +101,46 @@ func Up(o Options) (_ *Room, err error) {
 	return r, nil
 }
 
-// Close tears the room down.
-func (r *Room) Close() {
-	r.dev.Close()
+// deviceConfig is the device part of the AmneziaWG config: key and obfuscation.
+func deviceConfig(c config.Room, key identity.Key) string {
+	return fmt.Sprintf("private_key=%s\n", hex.EncodeToString(key[:])) + c.Secret.Derive().DeviceUAPI(c.ClientParams())
 }
 
-// Stats returns the raw AmneziaWG status (UAPI "get" output).
-func (r *Room) Stats() (string, error) { return r.dev.IpcGet() }
+// SetPeers changes the peer list in place. Unchanged peers keep their
+// sessions; only the difference is sent to AmneziaWG.
+func (r *Room) SetPeers(peers []config.Peer) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	uapi, next := peersDiff(r.peers, peers, r.psk)
+	if uapi == "" {
+		return nil
+	}
+	if err := r.dev.IpcSet(uapi); err != nil {
+		return fmt.Errorf("room %s: update peers: %w", r.Name, err)
+	}
+	r.peers = next
+	return nil
+}
 
-func uapiConfig(c config.Room, key identity.Key) string {
-	prof := c.Secret.Derive()
-	psk := hex.EncodeToString(prof.PresharedKey[:])
-
+func peersDiff(old map[identity.Key]config.Peer, peers []config.Peer, psk string) (string, map[identity.Key]config.Peer) {
+	next := make(map[identity.Key]config.Peer, len(peers))
 	var b strings.Builder
-	fmt.Fprintf(&b, "private_key=%s\n", hex.EncodeToString(key[:]))
-	b.WriteString(prof.DeviceUAPI(c.ClientParams()))
-	b.WriteString("replace_peers=true\n")
-	for _, p := range c.Peers {
+	for _, p := range peers {
+		next[p.PublicKey] = p
+		prev, existed := old[p.PublicKey]
+		if existed && prev.Endpoint == p.Endpoint && prev.Keepalive == p.Keepalive && slices.Equal(prev.AllowedIPs, p.AllowedIPs) {
+			continue
+		}
 		fmt.Fprintf(&b, "public_key=%s\n", hex.EncodeToString(p.PublicKey[:]))
-		fmt.Fprintf(&b, "preshared_key=%s\n", psk)
-		if p.Endpoint != "" {
+		if !existed {
+			fmt.Fprintf(&b, "preshared_key=%s\n", psk)
+		}
+		// Only push the endpoint when the controller's view changed, so a
+		// roamed (learned) endpoint is not reset on every update.
+		if p.Endpoint != "" && (!existed || prev.Endpoint != p.Endpoint) {
 			fmt.Fprintf(&b, "endpoint=%s\n", p.Endpoint)
 		}
-		if p.Keepalive > 0 {
+		if !existed || prev.Keepalive != p.Keepalive {
 			fmt.Fprintf(&b, "persistent_keepalive_interval=%d\n", p.Keepalive)
 		}
 		b.WriteString("replace_allowed_ips=true\n")
@@ -117,8 +148,22 @@ func uapiConfig(c config.Room, key identity.Key) string {
 			fmt.Fprintf(&b, "allowed_ip=%s\n", ip.Masked())
 		}
 	}
-	return b.String()
+	for k := range old {
+		if _, ok := next[k]; !ok {
+			fmt.Fprintf(&b, "public_key=%s\nremove=true\n", hex.EncodeToString(k[:]))
+		}
+	}
+	return b.String(), next
 }
+
+// Close tears the room down.
+func (r *Room) Close() {
+	r.dev.Close()
+	r.log.Info("room down")
+}
+
+// Stats returns the raw AmneziaWG status (UAPI "get" output).
+func (r *Room) Stats() (string, error) { return r.dev.IpcGet() }
 
 func wgLogger(log *slog.Logger) *device.Logger {
 	return &device.Logger{

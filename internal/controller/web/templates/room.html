@@ -1,0 +1,98 @@
+{{define "content"}}
+{{$csrf := .CSRF}}{{with .Data}}{{$room := .Room}}
+<p><a href="/rooms">← Комнаты</a></p>
+<h1>{{$room.Name}} <span class="muted mono small">{{$room.Subnet}}</span></h1>
+
+{{if .NewInvite}}
+<section class="card highlight">
+  <h2>Новое приглашение</h2>
+  <p>Ссылка показывается <b>один раз</b>. Передайте её участнику, он выполнит:</p>
+  <pre class="mono wrap" id="invite">zpt join "{{.NewInvite}}"</pre>
+  <p><button type="button" data-copy="invite">Скопировать команду</button></p>
+  {{if .NewInviteQR}}<img class="qr" src="{{.NewInviteQR}}" alt="QR-код приглашения">{{end}}
+</section>
+{{end}}
+
+<section class="card">
+  <h2>Участники</h2>
+  {{if .Members}}
+  <table>
+    <thead><tr><th></th><th>Имя</th><th>IP</th><th>Теги</th><th>Статус</th><th>Внешний IP</th><th>Был в сети</th><th>Действия</th></tr></thead>
+    <tbody>
+    {{range .Members}}
+      <tr>
+        <td>{{if online .LastSeen}}<span class="dot on" title="в сети"></span>{{else}}<span class="dot" title="не в сети"></span>{{end}}</td>
+        <td colspan="3">
+          <form method="post" action="/rooms/{{$room.ID}}/members/{{.NodeID}}/update" class="row">
+            <input type="hidden" name="csrf" value="{{$csrf}}">
+            <input name="name" value="{{.Name}}" maxlength="40" aria-label="имя" title="узел {{.NodeID}}">
+            <input name="ip" value="{{.IP}}" class="mono ip" aria-label="IP">
+            <input name="tags" value="{{join .Tags ", "}}" placeholder="теги" aria-label="теги">
+            <button class="small">Сохранить</button>
+          </form>
+        </td>
+        <td><span class="badge {{.Status}}">{{status .Status}}</span></td>
+        <td class="mono small">{{.PublicIP}}</td>
+        <td class="small">{{since .LastSeen}}</td>
+        <td class="actions">
+          {{if eq .Status "pending"}}{{template "act" (actArgs $room.ID .NodeID "approve" "Одобрить" $csrf "")}}{{end}}
+          {{if eq .Status "banned"}}{{template "act" (actArgs $room.ID .NodeID "unban" "Разблокировать" $csrf "")}}{{else}}{{template "act" (actArgs $room.ID .NodeID "ban" "Заблокировать" $csrf "Заблокировать участника? Он не сможет вернуться по приглашению.")}}{{end}}
+          {{template "act" (actArgs $room.ID .NodeID "kick" "Исключить" $csrf "Исключить участника из комнаты?")}}
+        </td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="muted">В комнате пока никого. Создайте приглашение ниже.</p>
+  {{end}}
+</section>
+
+<section class="card">
+  <h2>Приглашения</h2>
+  {{if .Invites}}
+  <table>
+    <thead><tr><th>Заметка</th><th>Осталось использований</th><th>Действует до</th><th>Без одобрения</th><th></th></tr></thead>
+    <tbody>
+    {{range .Invites}}
+      <tr>
+        <td>{{.Note}}</td><td>{{uses .UsesLeft}}</td><td>{{date .Expires}}</td><td>{{if .AutoApprove}}да{{else}}нет{{end}}</td>
+        <td><form method="post" action="/rooms/{{$room.ID}}/invites/{{.ID}}/revoke" class="inline"><input type="hidden" name="csrf" value="{{$csrf}}"><button class="small danger">Отозвать</button></form></td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{end}}
+  <form method="post" action="/rooms/{{$room.ID}}/invites" class="grid">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <label>Заметка <input name="note" maxlength="100" placeholder="для кого"></label>
+    <label>Использований <input name="uses" type="number" min="0" value="1" title="0 — без ограничений"></label>
+    <label>Действует, часов <input name="hours" type="number" min="1" max="8760" value="24"></label>
+    <label class="check"><input type="checkbox" name="auto"> Без одобрения</label>
+    <div><button>Создать приглашение</button></div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Настройки</h2>
+  <form method="post" action="/rooms/{{$room.ID}}/settings" class="grid">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <label>Название <input name="name" value="{{$room.Name}}" maxlength="40" required></label>
+    <label>Вступление
+      <select name="policy">
+        <option value="manual" {{if eq $room.JoinPolicy "manual"}}selected{{end}}>с одобрением админа</option>
+        <option value="auto" {{if eq $room.JoinPolicy "auto"}}selected{{end}}>автоматически по приглашению</option>
+      </select>
+    </label>
+    <div><button>Сохранить</button></div>
+  </form>
+  <p class="muted small">ID комнаты: <span class="mono">{{$room.ID}}</span><br>Ключ подписи: <span class="mono">{{.RoomKey}}</span></p>
+  <form method="post" action="/rooms/{{$room.ID}}/delete" data-confirm="Удалить комнату «{{$room.Name}}» у всех участников? Это необратимо.">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <button class="danger">Удалить комнату</button>
+  </form>
+</section>
+{{end}}
+{{end}}
+
+{{define "act"}}<form method="post" action="/rooms/{{.Room}}/members/{{.Node}}/{{.Action}}" class="inline"{{if .Confirm}} data-confirm="{{.Confirm}}"{{end}}><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="small{{if or (eq .Action "ban") (eq .Action "kick")}} danger{{end}}">{{.Label}}</button></form>{{end}}
