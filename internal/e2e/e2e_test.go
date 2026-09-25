@@ -33,6 +33,8 @@ import (
 	"github.com/Chistovik92/zeropentime/internal/node"
 	"github.com/Chistovik92/zeropentime/internal/store"
 	"github.com/Chistovik92/zeropentime/internal/stun"
+
+	"github.com/Chistovik92/zeropentime/internal/testutil"
 )
 
 var quiet = slog.New(slog.DiscardHandler)
@@ -72,7 +74,7 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "ctl.db"))
+	st, err := store.Open(filepath.Join(testutil.TempDir(t), "ctl.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +183,7 @@ func (e *env) nodeOpts(name string, locals func(uint16, []netip.Prefix) []netip.
 func (e *env) nodeFull(name string, locals func(uint16, []netip.Prefix) []netip.AddrPort, blockDirect, blockUDPRelay bool) *testNode {
 	e.t.Helper()
 	id, _ := identity.Generate()
-	dir := e.t.TempDir()
+	dir := testutil.TempDir(e.t)
 	port := 0
 	cfg := &config.Config{ListenPort: &port, Userspace: true}
 	if err := cfg.Validate(); err != nil {

@@ -16,11 +16,13 @@ import (
 	"testing"
 
 	"github.com/Chistovik92/zeropentime/internal/store"
+
+	"github.com/Chistovik92/zeropentime/internal/testutil"
 )
 
 func newTestServer(t *testing.T) (*httptest.Server, *Service) {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "c.db"))
+	st, err := store.Open(filepath.Join(testutil.TempDir(t), "c.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -60,9 +60,12 @@ type Room struct {
 	// Secret is shared by all members of the room ("zpt room new"). All
 	// AmneziaWG obfuscation parameters and the extra pre-shared key are
 	// derived from it.
-	Secret      obfs.Secret  `yaml:"secret"`
-	Address     netip.Prefix `yaml:"address"`
-	MTU         int          `yaml:"mtu"`
+	Secret  obfs.Secret  `yaml:"secret"`
+	Address netip.Prefix `yaml:"address"`
+	MTU     int          `yaml:"mtu"`
+	// Broadcast shares LAN broadcast and multicast between members:
+	// "on" (default), "off" or "mdns" (only mDNS).
+	Broadcast   string       `yaml:"broadcast"`
 	Obfuscation *Obfuscation `yaml:"obfuscation"`
 	Peers       []Peer       `yaml:"peers"`
 }
@@ -216,6 +219,11 @@ func (r *Room) ValidateRoom() error {
 	}
 	if !r.Address.IsValid() {
 		return fmt.Errorf("room %q: address is required, e.g. 10.100.1.1/24", r.Name)
+	}
+	switch r.Broadcast {
+	case "", "on", "off", "mdns":
+	default:
+		return fmt.Errorf("room %q: broadcast must be on, off or mdns", r.Name)
 	}
 	if r.MTU == 0 {
 		r.MTU = DefaultMTU

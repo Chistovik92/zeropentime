@@ -87,6 +87,13 @@
         <option value="auto" {{if eq $room.JoinPolicy "auto"}}selected{{end}}>автоматически по приглашению</option>
       </select>
     </label>
+    <label title="Поиск игр и устройств в локальной сети (broadcast, mDNS, SSDP)">Широковещание
+      <select name="broadcast">
+        <option value="on" {{if eq $room.Broadcast "on"}}selected{{end}}>включено (LAN-игры, mDNS)</option>
+        <option value="mdns" {{if eq $room.Broadcast "mdns"}}selected{{end}}>только mDNS</option>
+        <option value="off" {{if eq $room.Broadcast "off"}}selected{{end}}>выключено</option>
+      </select>
+    </label>
     <div><button>Сохранить</button></div>
   </form>
   <p class="muted small">ID комнаты: <span class="mono">{{$room.ID}}</span><br>Ключ подписи: <span class="mono">{{.RoomKey}}</span></p>

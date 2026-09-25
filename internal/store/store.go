@@ -60,6 +60,8 @@ var migrations = []string{
 	`CREATE TABLE settings (key TEXT PRIMARY KEY, value BLOB NOT NULL);
 	 ALTER TABLE nodes ADD COLUMN relay TEXT NOT NULL DEFAULT '';
 	 CREATE INDEX nodes_disco ON nodes(disco_key);`,
+	// 5 (0.2.3): LAN broadcast sharing per room.
+	`ALTER TABLE rooms ADD COLUMN broadcast TEXT NOT NULL DEFAULT 'on';`,
 }
 
 // SchemaVersion is the version a fully migrated database has.
@@ -368,6 +370,7 @@ type Room struct {
 	SignKey    []byte // Ed25519 private key
 	OwnerID    int64
 	JoinPolicy string // "manual" or "auto"
+	Broadcast  string // "on", "off" or "mdns"
 	Version    int64
 	CreatedAt  time.Time
 }
@@ -378,13 +381,13 @@ func (t *Tx) CreateRoom(r *Room) error {
 	return err
 }
 
-const roomCols = `id, name, subnet, secret, sign_key, owner_id, join_policy, version, created_at`
+const roomCols = `id, name, subnet, secret, sign_key, owner_id, join_policy, version, created_at, broadcast`
 
 func scanRoom(row interface{ Scan(...any) error }) (*Room, error) {
 	var r Room
 	var subnet string
 	var created int64
-	if err := row.Scan(&r.ID, &r.Name, &subnet, &r.Secret, &r.SignKey, &r.OwnerID, &r.JoinPolicy, &r.Version, &created); err != nil {
+	if err := row.Scan(&r.ID, &r.Name, &subnet, &r.Secret, &r.SignKey, &r.OwnerID, &r.JoinPolicy, &r.Version, &created, &r.Broadcast); err != nil {
 		return nil, notFound(err)
 	}
 	r.Subnet, _ = netip.ParsePrefix(subnet)
@@ -433,8 +436,8 @@ func (t *Tx) AllSubnets() ([]netip.Prefix, error) {
 	return out, rows.Err()
 }
 
-func (t *Tx) UpdateRoom(id, name, joinPolicy string) error {
-	_, err := t.tx.Exec(`UPDATE rooms SET name = ?, join_policy = ? WHERE id = ?`, name, joinPolicy, id)
+func (t *Tx) UpdateRoom(id, name, joinPolicy, broadcast string) error {
+	_, err := t.tx.Exec(`UPDATE rooms SET name = ?, join_policy = ?, broadcast = ? WHERE id = ?`, name, joinPolicy, broadcast, id)
 	return err
 }
 

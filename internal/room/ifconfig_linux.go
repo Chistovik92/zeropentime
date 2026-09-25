@@ -14,8 +14,11 @@ import (
 
 func configureInterface(_ tun.Device, name string, addr netip.Prefix, mtu int, _ *slog.Logger) error {
 	cmds := [][]string{
-		{"ip", "address", "add", addr.String(), "dev", name},
-		{"ip", "link", "set", "dev", name, "mtu", strconv.Itoa(mtu), "up"},
+		// "brd +": the subnet broadcast address must be a broadcast for the
+		// kernel on this point-to-point device, or LAN discovery breaks.
+		{"ip", "address", "add", addr.String(), "brd", "+", "dev", name},
+		// Multicast must be on for mDNS / SSDP / game discovery.
+		{"ip", "link", "set", "dev", name, "mtu", strconv.Itoa(mtu), "multicast", "on", "up"},
 	}
 	for _, c := range cmds {
 		if out, err := exec.Command(c[0], c[1:]...).CombinedOutput(); err != nil {

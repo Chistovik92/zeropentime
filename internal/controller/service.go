@@ -177,7 +177,7 @@ func pickSubnet(used []netip.Prefix) (netip.Prefix, error) {
 	return netip.Prefix{}, errors.New("no free subnet in pool")
 }
 
-func (s *Service) UpdateRoom(ctx context.Context, u *store.User, roomID, name, policy string) error {
+func (s *Service) UpdateRoom(ctx context.Context, u *store.User, roomID, name, policy, broadcast string) error {
 	name, err := ValidateRoomName(name)
 	if err != nil {
 		return err
@@ -185,17 +185,20 @@ func (s *Service) UpdateRoom(ctx context.Context, u *store.User, roomID, name, p
 	if !validPolicy(policy) {
 		return invalid("режим вступления: manual или auto")
 	}
+	if broadcast != "on" && broadcast != "off" && broadcast != "mdns" {
+		return invalid("broadcast: on, off или mdns")
+	}
 	return s.change(ctx, func(tx *store.Tx) error {
 		if _, err := s.roomFor(tx, u, roomID); err != nil {
 			return err
 		}
-		if err := tx.UpdateRoom(roomID, name, policy); err != nil {
+		if err := tx.UpdateRoom(roomID, name, policy, broadcast); err != nil {
 			return err
 		}
 		if err := tx.BumpRoom(roomID); err != nil {
 			return err
 		}
-		return tx.Audit(u.Login, "room.update", roomID, name+" "+policy)
+		return tx.Audit(u.Login, "room.update", roomID, name+" "+policy+" broadcast="+broadcast)
 	})
 }
 
@@ -617,7 +620,7 @@ func (s *Service) netMap(ctx context.Context, nodeID string) (*api.NetMap, error
 				if err != nil {
 					return err
 				}
-				cfg := &pki.RoomConfig{RoomID: r.ID, Name: r.Name, Subnet: r.Subnet, Version: r.Version, IssuedAt: s.now().UTC()}
+				cfg := &pki.RoomConfig{RoomID: r.ID, Name: r.Name, Subnet: r.Subnet, Version: r.Version, IssuedAt: s.now().UTC(), Broadcast: r.Broadcast}
 				copy(cfg.Secret[:], r.Secret)
 				for _, o := range members {
 					if o.Status != store.StatusActive {

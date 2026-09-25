@@ -324,7 +324,7 @@ func (h *Server) roomPage(w http.ResponseWriter, r *http.Request, u *store.User,
 
 func (h *Server) roomSettings(w http.ResponseWriter, r *http.Request, u *store.User, _ string) {
 	id := r.PathValue("id")
-	err := h.svc.UpdateRoom(r.Context(), u, id, r.PostFormValue("name"), r.PostFormValue("policy"))
+	err := h.svc.UpdateRoom(r.Context(), u, id, r.PostFormValue("name"), r.PostFormValue("policy"), r.PostFormValue("broadcast"))
 	back(w, r, "/rooms/"+id, err, "Настройки сохранены")
 }
 

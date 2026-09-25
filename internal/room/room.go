@@ -23,6 +23,7 @@ import (
 
 	"github.com/Chistovik92/zeropentime/internal/config"
 	"github.com/Chistovik92/zeropentime/internal/identity"
+	"github.com/Chistovik92/zeropentime/internal/tunwrap"
 )
 
 // Room is a running virtual LAN.
@@ -34,6 +35,7 @@ type Room struct {
 
 	ifname string
 	dev    *device.Device
+	bcast  *tunwrap.Device
 	log    *slog.Logger
 	psk    string
 
@@ -94,7 +96,8 @@ func Up(o Options) (_ *Room, err error) {
 		}
 	}
 
-	r.dev = device.NewDevice(tdev, o.Bind, wgLogger(log))
+	r.bcast = tunwrap.New(tdev, c.Address, c.Broadcast)
+	r.dev = device.NewDevice(r.bcast, o.Bind, wgLogger(log))
 	defer func() {
 		if err != nil {
 			r.dev.Close() // also closes tdev
@@ -134,6 +137,15 @@ func (r *Room) SetPeers(peers []config.Peer) error {
 		return fmt.Errorf("room %s: update peers: %w", r.Name, err)
 	}
 	r.peers = next
+	var ips []netip.Addr
+	for _, p := range next {
+		for _, a := range p.AllowedIPs {
+			if a.IsSingleIP() {
+				ips = append(ips, a.Addr())
+			}
+		}
+	}
+	r.bcast.SetPeers(ips)
 	for _, k := range deferred {
 		time.AfterFunc(keepaliveDelay, func() { r.enableKeepalive(k) })
 	}
@@ -193,6 +205,9 @@ func peersDiff(old map[identity.Key]config.Peer, peers []config.Peer, psk string
 	}
 	return b.String(), next, deferred
 }
+
+// SetBroadcast changes how broadcast and multicast are shared ("on", "off", "mdns").
+func (r *Room) SetBroadcast(mode string) { r.bcast.SetMode(mode) }
 
 // Close tears the room down.
 func (r *Room) Close() {

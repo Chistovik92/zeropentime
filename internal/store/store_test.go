@@ -8,12 +8,14 @@ import (
 	"net/netip"
 	"path/filepath"
 	"testing"
+
+	"github.com/Chistovik92/zeropentime/internal/testutil"
 )
 
 // A database created by 0.1.x (schema version 1) is upgraded in place and
 // keeps its data.
 func TestMigrateFromV1(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "old.db")
+	path := filepath.Join(testutil.TempDir(t), "old.db")
 	db, err := sql.Open("sqlite", "file:"+path)
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +63,7 @@ func TestMigrateFromV1(t *testing.T) {
 }
 
 func TestRefuseNewerSchema(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "new.db")
+	path := filepath.Join(testutil.TempDir(t), "new.db")
 	st, err := Open(path)
 	if err != nil {
 		t.Fatal(err)

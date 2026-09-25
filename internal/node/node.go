@@ -479,6 +479,7 @@ func (n *Node) apply(url string, nm *api.NetMap) {
 					n.log.Error("update peers", "room", rc.Name, "err", err)
 					continue
 				}
+				cur.room.SetBroadcast(rc.Broadcast)
 				cur.cfg = rc
 				continue
 			}
@@ -515,7 +516,7 @@ func (n *Node) roomFromConfig(url, keyStr string, rs api.RoomState, nm *api.NetM
 	n.versions[rs.RoomID] = cfg.Version
 
 	me := n.ID.NodeID()
-	rc := &config.Room{Name: cfg.Name, Secret: cfg.Secret, MTU: config.DefaultMTU}
+	rc := &config.Room{Name: cfg.Name, Secret: cfg.Secret, MTU: config.DefaultMTU, Broadcast: cfg.Broadcast}
 	found := false
 	for _, m := range cfg.Members {
 		if m.NodeID == me {

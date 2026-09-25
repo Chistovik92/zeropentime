@@ -135,6 +135,51 @@ room_ip() { { ip -n "$1" -4 -o addr show dev zpt-lab 2>/dev/null || true; } | aw
 
 nat_seen() { { grep -o 'msg="external address checked".*nat=[a-z-]*' "$WORK/$1.log" || true; } | tail -1 | sed 's/.*nat=//'; }
 
+# test_broadcast IP_A IP_B: LAN discovery through the room — a subnet
+# broadcast and an mDNS-group multicast sent on A must arrive on B.
+test_broadcast() {
+  local ipA=$1 ipB=$2 bcast
+  bcast="${ipB%.*}.255"
+  ip netns exec zhostB python3 - "$WORK/bcast.out" "$ipB" <<'PY' &
+import socket, struct, sys
+out = open(sys.argv[1], "w")
+b = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+b.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+b.bind(("0.0.0.0", 47000))
+m = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+m.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+m.bind(("224.0.0.251", 47001))
+m.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+             struct.pack("4s4s", socket.inet_aton("224.0.0.251"), socket.inet_aton(sys.argv[2])))
+b.settimeout(15); m.settimeout(15)
+for name, s in (("broadcast", b), ("multicast", m)):
+    try:
+        data, src = s.recvfrom(100)
+        out.write(f"{name} {data.decode()} {src[0]}\n")
+    except OSError as e:
+        out.write(f"{name} none {e}\n")
+    out.flush()
+PY
+  local rx=$!
+  sleep 1
+  ip netns exec zhostA python3 - "$ipA" "$bcast" <<'PY'
+import socket, sys, time
+me, bcast = sys.argv[1], sys.argv[2]
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+m = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+m.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(me))
+for _ in range(5):
+    s.sendto(b"lan-game", (bcast, 47000))
+    m.sendto(b"mdns", ("224.0.0.251", 47001))
+    time.sleep(0.5)
+PY
+  wait "$rx" || true
+  log "LAN-обнаружение: $(tr '\n' ';' < "$WORK/bcast.out")"
+  grep -q "^broadcast lan-game $ipA" "$WORK/bcast.out" || { log "ОШИБКА: broadcast не дошёл"; FAILED=1; }
+  grep -q "^multicast mdns $ipA" "$WORK/bcast.out" || { log "ОШИБКА: multicast не дошёл"; FAILED=1; }
+}
+
 want_nat() { case $1 in cone) echo cone ;; symmetric) echo symmetric ;; udp-blocked) echo udp-blocked ;; esac; }
 
 # path_seen NODE: how the node reaches its peer, from its log.
@@ -198,6 +243,9 @@ run_case() {
     log "ОШИБКА: нет связи"; FAILED=1; dump
   elif [ "$path" != "$expect" ]; then
     log "ОШИБКА: трафик идёт не тем путём"; FAILED=1; dump
+  fi
+  if [ "$ok" = yes ] && [ "$CASE" = cone-cone ]; then
+    test_broadcast "$ipA" "$ipB"
   fi
   if [ "$ok" = yes ]; then
     # Real traffic over the tunnel in both directions.

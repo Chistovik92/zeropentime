@@ -60,6 +60,8 @@ type RoomConfig struct {
 	Version  int64        `json:"version"`
 	IssuedAt time.Time    `json:"issued_at"`
 	Members  []Member     `json:"members"`
+	// Broadcast: "on" (default when empty), "off" or "mdns".
+	Broadcast string `json:"broadcast,omitempty"`
 }
 
 // Signed is a payload with an Ed25519 signature over it. The payload is
