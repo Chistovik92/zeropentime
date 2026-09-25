@@ -3,11 +3,21 @@
 package fsutil
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 
 	"golang.org/x/sys/windows"
 )
+
+// aces returns the access entries of an SDDL string, e.g. "(A;;FA;;;SY)...".
+func aces(sddl string) string {
+	if i := strings.Index(sddl, "("); i >= 0 {
+		return sddl[i:]
+	}
+	return ""
+}
 
 func checkWindowsACL(t *testing.T, path string) {
 	t.Helper()
@@ -15,23 +25,30 @@ func checkWindowsACL(t *testing.T, path string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sddl := sd.String()
-	sid, _ := currentUserSID()
-	if !strings.Contains(sddl, "D:P") {
-		t.Errorf("%s: DACL is not protected from inheritance: %s", path, sddl)
+	got := sd.String()
+	if !strings.HasPrefix(got, "D:P") {
+		t.Errorf("%s: DACL is not protected from inheritance: %s", path, got)
 	}
-	for _, who := range []string{"SY", "BA", sid} {
-		if !strings.Contains(sddl, ";;;"+who+")") {
-			t.Errorf("%s: no entry for %s: %s", path, who, sddl)
-		}
+	// Build the expected descriptor the same way, so Windows renders SIDs
+	// identically (e.g. the built-in Administrator account becomes "LA").
+	format := fileSDDL
+	if st, err := os.Stat(path); err == nil && st.IsDir() {
+		format = dirSDDL
 	}
-	// Exactly three entries: nobody else (Users, Everyone, Authenticated Users).
-	if n := strings.Count(sddl, "(A;"); n != 3 {
-		t.Errorf("%s: %d access entries, want 3: %s", path, n, sddl)
+	sid, err := currentUserSID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := windows.SecurityDescriptorFromString(fmt.Sprintf(format, sid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if aces(got) != aces(want.String()) {
+		t.Errorf("%s: access entries\n got  %s\n want %s", path, aces(got), aces(want.String()))
 	}
 	for _, other := range []string{";BU)", ";WD)", ";AU)"} {
-		if strings.Contains(sddl, other) {
-			t.Errorf("%s: grants access to %s: %s", path, other, sddl)
+		if strings.Contains(got, other) {
+			t.Errorf("%s: grants access to %s: %s", path, other, got)
 		}
 	}
 }
