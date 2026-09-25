@@ -20,6 +20,15 @@ jobs:
           go-version-file: go.mod
       - name: Тесты
         run: go test -count=1 ./...
+        env:
+          TMPDIR: ${{ runner.temp }}
+      - name: Сохранить отладочные логи e2e
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-${{ runner.os }}
+          path: ${{ runner.temp }}/zpt-e2e-*.log
+          if-no-files-found: ignore
       - name: Заметки к релизу из CHANGELOG.md
         run: scripts/release-notes.sh "${GITHUB_REF_NAME#v}" > "$RUNNER_TEMP/notes.md"
       - uses: goreleaser/goreleaser-action@v6

@@ -23,8 +23,19 @@ jobs:
       - run: go vet ./...
       - run: go test -race -count=1 ./...
         if: runner.os != 'Windows'
+        env:
+          TMPDIR: ${{ runner.temp }}
       - run: go test -count=1 ./...
         if: runner.os == 'Windows'
+        env:
+          TMP: ${{ runner.temp }}
+      - name: Сохранить отладочные логи e2e
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-${{ runner.os }}
+          path: ${{ runner.temp }}/zpt-e2e-*.log
+          if-no-files-found: ignore
       - run: go build -o dist/ ./cmd/zpt ./cmd/zpt-controller
 
   dco:

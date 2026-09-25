@@ -5,6 +5,7 @@
 package room
 
 import (
+	"bytes"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/amnezia-vpn/amneziawg-go/conn"
 	"github.com/amnezia-vpn/amneziawg-go/device"
@@ -35,9 +37,20 @@ type Room struct {
 	log    *slog.Logger
 	psk    string
 
-	mu    sync.Mutex
-	peers map[identity.Key]config.Peer // as last configured
+	self identity.Key // this node's public key in the room
+
+	mu     sync.Mutex
+	peers  map[identity.Key]config.Peer // as last configured
+	closed bool
 }
+
+// keepaliveDelay postpones persistent keepalive on the side of a new peer
+// pair with the larger public key. If both sides start a handshake in the
+// same instant (typical when the controller introduces two nodes to each
+// other), one direction stays unusable until the handshake is retried
+// REKEY_TIMEOUT (5 s) later. Letting the smaller key go first avoids that;
+// afterwards only the initiator rekeys, so the race does not come back.
+var keepaliveDelay = 3 * time.Second
 
 // Options configure Up.
 type Options struct {
@@ -53,7 +66,7 @@ func Up(o Options) (_ *Room, err error) {
 	c := o.Config
 	log := o.Log.With("room", c.Name)
 	prof := c.Secret.Derive()
-	r := &Room{Name: c.Name, Address: c.Address, log: log, psk: hex.EncodeToString(prof.PresharedKey[:]), peers: map[identity.Key]config.Peer{}}
+	r := &Room{Name: c.Name, Address: c.Address, log: log, psk: hex.EncodeToString(prof.PresharedKey[:]), self: o.Key.Public(), peers: map[identity.Key]config.Peer{}}
 
 	var tdev tun.Device
 	if o.Userspace {
@@ -113,7 +126,7 @@ func deviceConfig(c config.Room, key identity.Key) string {
 func (r *Room) SetPeers(peers []config.Peer) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	uapi, next := peersDiff(r.peers, peers, r.psk)
+	uapi, next, deferred := peersDiff(r.peers, peers, r.psk, r.self)
 	if uapi == "" {
 		return nil
 	}
@@ -121,11 +134,30 @@ func (r *Room) SetPeers(peers []config.Peer) error {
 		return fmt.Errorf("room %s: update peers: %w", r.Name, err)
 	}
 	r.peers = next
+	for _, k := range deferred {
+		time.AfterFunc(keepaliveDelay, func() { r.enableKeepalive(k) })
+	}
 	return nil
 }
 
-func peersDiff(old map[identity.Key]config.Peer, peers []config.Peer, psk string) (string, map[identity.Key]config.Peer) {
-	next := make(map[identity.Key]config.Peer, len(peers))
+func (r *Room) enableKeepalive(k identity.Key) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.peers[k]
+	if r.closed || !ok || p.Keepalive == 0 {
+		return
+	}
+	uapi := fmt.Sprintf("public_key=%s\nupdate_only=true\npersistent_keepalive_interval=%d\n", hex.EncodeToString(k[:]), p.Keepalive)
+	if err := r.dev.IpcSet(uapi); err != nil {
+		r.log.Error("enable keepalive", "err", err)
+	}
+}
+
+// peersDiff renders the AmneziaWG config change from old to peers. For new
+// peers whose key is smaller than ours, keepalive is left off for now and
+// returned in deferred (see keepaliveDelay).
+func peersDiff(old map[identity.Key]config.Peer, peers []config.Peer, psk string, self identity.Key) (uapi string, next map[identity.Key]config.Peer, deferred []identity.Key) {
+	next = make(map[identity.Key]config.Peer, len(peers))
 	var b strings.Builder
 	for _, p := range peers {
 		next[p.PublicKey] = p
@@ -142,7 +174,11 @@ func peersDiff(old map[identity.Key]config.Peer, peers []config.Peer, psk string
 		if p.Endpoint != "" && (!existed || prev.Endpoint != p.Endpoint) {
 			fmt.Fprintf(&b, "endpoint=%s\n", p.Endpoint)
 		}
-		if !existed || prev.Keepalive != p.Keepalive {
+		switch {
+		case !existed && p.Keepalive > 0 && bytes.Compare(self[:], p.PublicKey[:]) > 0:
+			b.WriteString("persistent_keepalive_interval=0\n")
+			deferred = append(deferred, p.PublicKey)
+		case !existed || prev.Keepalive != p.Keepalive:
 			fmt.Fprintf(&b, "persistent_keepalive_interval=%d\n", p.Keepalive)
 		}
 		b.WriteString("replace_allowed_ips=true\n")
@@ -155,11 +191,14 @@ func peersDiff(old map[identity.Key]config.Peer, peers []config.Peer, psk string
 			fmt.Fprintf(&b, "public_key=%s\nremove=true\n", hex.EncodeToString(k[:]))
 		}
 	}
-	return b.String(), next
+	return b.String(), next, deferred
 }
 
 // Close tears the room down.
 func (r *Room) Close() {
+	r.mu.Lock()
+	r.closed = true
+	r.mu.Unlock()
 	r.dev.Close()
 	r.log.Info("room down")
 }
