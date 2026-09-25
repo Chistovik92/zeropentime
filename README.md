@@ -13,7 +13,8 @@
 ## Сборка
 
 ```bash
-go build -o zpt ./cmd/zpt
+go build -o zpt ./cmd/zpt                        # узел
+go build -o zpt-controller ./cmd/zpt-controller  # контроллер с админ-панелью
 ```
 
 Нужен Go 1.26+. Windows: положите `wintun.dll` (с https://www.wintun.net, под свою архитектуру) рядом с `zpt.exe`.
@@ -21,8 +22,8 @@ go build -o zpt ./cmd/zpt
 ## Контроллер и админ-панель
 
 ```bash
-zpt controller useradd -db controller.db -login admin -admin
-zpt controller serve -db controller.db -listen :8080 -url https://zpt.example.org
+zpt-controller useradd -db controller.db -login admin -admin
+zpt-controller serve -db controller.db -listen :8080 -url https://zpt.example.org
 ```
 
 Панель: `https://zpt.example.org` → войти → создать комнату → «Создать приглашение». Для HTTPS используйте `-tls-cert/-tls-key` или обратный прокси с `-trust-proxy` (готовый вариант с Caddy: [deploy/docker-compose.yml](deploy/docker-compose.yml)).
@@ -33,7 +34,7 @@ zpt controller serve -db controller.db -listen :8080 -url https://zpt.example.or
 - приглашения: лимит использований, срок, «без одобрения», заметка, ссылка + QR-код (показываются один раз), отзыв;
 - пользователи (для админа), смена пароля, журнал всех действий.
 
-Забыли пароль: `zpt controller passwd -db controller.db -login admin`.
+Забыли пароль: `zpt-controller passwd -db controller.db -login admin`.
 
 ## Узел: вступить в комнату
 
@@ -72,3 +73,7 @@ go test ./...
 - в перехваченных пакетах нет открытого текста;
 - у пакетов нет постоянного префикса (сигнатуры для DPI);
 - узел без разрешения или с неверным секретом комнаты не может подключиться.
+
+## Лицензия
+
+Узел и общие пакеты — [MPL-2.0](LICENSE), контроллер и админ-панель — [AGPL-3.0](LICENSE.AGPL). Подробности и что это значит на практике — в [LICENSING.md](LICENSING.md). Вклад в проект — с подписью DCO, см. [CONTRIBUTING.md](CONTRIBUTING.md).

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 // Package client talks to a controller on behalf of a node.
 package client
 

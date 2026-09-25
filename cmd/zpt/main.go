@@ -1,4 +1,7 @@
-// Command zpt is the zeropentime node and controller.
+// SPDX-License-Identifier: MPL-2.0
+
+// Command zpt is the zeropentime node. The controller is a separate
+// binary, zpt-controller (different license, see LICENSING.md).
 package main
 
 import (
@@ -10,18 +13,15 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/Chistovik92/zeropentime/internal/api"
 	"github.com/Chistovik92/zeropentime/internal/client"
 	"github.com/Chistovik92/zeropentime/internal/config"
-	"github.com/Chistovik92/zeropentime/internal/controller"
 	"github.com/Chistovik92/zeropentime/internal/identity"
 	"github.com/Chistovik92/zeropentime/internal/node"
 	"github.com/Chistovik92/zeropentime/internal/obfs"
-	"github.com/Chistovik92/zeropentime/internal/store"
 )
 
 var version = "0.1.0-dev"
@@ -36,12 +36,9 @@ const usage = `zpt — zeropentime: децентрализованные вир�
   zpt pubkey  -c КОНФИГ                     публичные ключи узла в статических комнатах
   zpt room new                              секрет статической комнаты (без контроллера)
 
-Контроллер (админ-панель + API для узлов):
-  zpt controller serve   -db ФАЙЛ [-listen :8080] [-url https://...] [-tls-cert Ф -tls-key Ф] [-trust-proxy]
-  zpt controller useradd -db ФАЙЛ -login ЛОГИН [-admin]
-  zpt controller passwd  -db ФАЙЛ -login ЛОГИН
-
   zpt version
+
+Контроллер с админ-панелью — отдельная программа zpt-controller.
 `
 
 func main() {
@@ -64,7 +61,7 @@ func main() {
 	case "up":
 		err = cmdUp(args)
 	case "controller":
-		err = cmdController(args)
+		err = errors.New("контроллер вынесен в отдельную программу: zpt-controller serve|useradd|passwd")
 	case "version":
 		fmt.Println("zpt", version)
 	case "help", "-h", "--help":
@@ -299,84 +296,4 @@ func cmdUp(args []string) error {
 	<-sig
 	log.Info("остановка")
 	return nil
-}
-
-func cmdController(args []string) error {
-	if len(args) == 0 {
-		return errors.New("использование: zpt controller serve|useradd|passwd ...")
-	}
-	sub, args := args[0], args[1:]
-	fl := flag.NewFlagSet("controller "+sub, flag.ExitOnError)
-	db := fl.String("db", "zpt-controller.db", "файл базы данных")
-	switch sub {
-	case "serve":
-		listen := fl.String("listen", ":8080", "адрес HTTP(S)")
-		pub := fl.String("url", "", "внешний адрес контроллера для ссылок-приглашений, например https://zpt.example.org")
-		cert := fl.String("tls-cert", "", "TLS-сертификат (PEM)")
-		key := fl.String("tls-key", "", "TLS-ключ (PEM)")
-		trust := fl.Bool("trust-proxy", false, "доверять X-Forwarded-For/-Proto от обратного прокси")
-		level := fl.String("log-level", "info", "debug|info|warn|error")
-		fl.Parse(args)
-		log, err := newLogger(*level)
-		if err != nil {
-			return err
-		}
-		svc, closeDB, err := openService(*db, log)
-		if err != nil {
-			return err
-		}
-		defer closeDB()
-		srv, err := controller.NewServer(controller.Config{
-			Listen: *listen, PublicURL: strings.TrimRight(*pub, "/"), TLSCert: *cert, TLSKey: *key, TrustProxy: *trust,
-		}, svc, log)
-		if err != nil {
-			return err
-		}
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stop()
-		return srv.Serve(ctx)
-	case "useradd":
-		login := fl.String("login", "", "логин")
-		admin := fl.Bool("admin", false, "администратор инстанса")
-		fl.Parse(args)
-		svc, closeDB, err := openService(*db, slog.New(slog.DiscardHandler))
-		if err != nil {
-			return err
-		}
-		defer closeDB()
-		pw := controller.RandomPassword()
-		if err := svc.CreateUser(context.Background(), nil, *login, pw, *admin); err != nil {
-			return err
-		}
-		fmt.Printf("пользователь создан: %s\nпароль: %s\n(сохраните его, повторно он не показывается)\n", strings.ToLower(*login), pw)
-		return nil
-	case "passwd":
-		login := fl.String("login", "", "логин")
-		fl.Parse(args)
-		svc, closeDB, err := openService(*db, slog.New(slog.DiscardHandler))
-		if err != nil {
-			return err
-		}
-		defer closeDB()
-		pw := controller.RandomPassword()
-		if err := svc.SetPassword(context.Background(), strings.ToLower(*login), pw); err != nil {
-			return err
-		}
-		fmt.Printf("новый пароль для %s: %s\n", *login, pw)
-		return nil
-	}
-	return fmt.Errorf("неизвестная подкоманда controller %q", sub)
-}
-
-func openService(db string, log *slog.Logger) (*controller.Service, func(), error) {
-	st, err := store.Open(db)
-	if err != nil {
-		return nil, nil, err
-	}
-	svc, err := controller.NewService(st, log)
-	if err != nil {
-		st.Close()
-		return nil, nil, err
-	}
-	return svc, func() { st.Close() }, nil
 }

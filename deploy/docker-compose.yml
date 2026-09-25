@@ -1,7 +1,7 @@
 # Контроллер за обратным прокси Caddy с автоматическим HTTPS.
 # 1. Укажите свой домен в ZPT_DOMAIN (DNS должен указывать на этот сервер).
 # 2. docker compose up -d
-# 3. docker compose exec controller zpt controller useradd -db /data/controller.db -login admin -admin
+# 3. docker compose exec controller zpt-controller useradd -db /data/controller.db -login admin -admin
 services:
   controller:
     build:

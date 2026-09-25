@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 // Package config loads the static node configuration.
 //
 // In phase 0 rooms and peers are described statically in YAML. Later phases

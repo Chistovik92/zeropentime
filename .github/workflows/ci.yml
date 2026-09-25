@@ -22,4 +22,22 @@ jobs:
         if: runner.os != 'Windows'
       - run: go test -count=1 ./...
         if: runner.os == 'Windows'
-      - run: go build -o dist/ ./cmd/zpt
+      - run: go build -o dist/ ./cmd/zpt ./cmd/zpt-controller
+
+  dco:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Каждый коммит подписан (git commit -s)
+        run: |
+          missing=0
+          for c in $(git rev-list ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}); do
+            if ! git log -1 --format=%B "$c" | grep -q '^Signed-off-by: '; then
+              echo "::error::коммит $c без Signed-off-by (используйте git commit -s)"
+              missing=1
+            fi
+          done
+          exit $missing

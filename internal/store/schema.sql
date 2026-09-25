@@ -1,3 +1,4 @@
+-- SPDX-License-Identifier: AGPL-3.0-only
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value INTEGER NOT NULL

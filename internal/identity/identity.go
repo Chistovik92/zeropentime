@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 // Package identity manages the long-term node key and keys derived from it.
 //
 // Each node has a single Ed25519 identity. For every room the node derives a

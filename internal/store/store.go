@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // Package store is the controller database (SQLite, pure Go, no CGO).
 package store
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // Package e2e runs a controller and several nodes in one process (userspace
 // network stacks, real UDP on loopback) and checks the phase 1 scenarios.
 package e2e

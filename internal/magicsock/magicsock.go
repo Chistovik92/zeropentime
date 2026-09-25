@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 // Package magicsock multiplexes all rooms of a node over a single UDP socket.
 //
 // Every datagram is

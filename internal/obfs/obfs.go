@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 // Package obfs derives everything a room needs on the wire from one shared
 // room secret: AmneziaWG 3 obfuscation parameters, the extra pre-shared key
 // and the hidden room tag used to demultiplex rooms on the shared socket.

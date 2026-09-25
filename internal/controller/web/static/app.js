@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 // Confirmation for dangerous actions and copy-to-clipboard buttons.
 document.addEventListener("submit", (e) => {
   const msg = e.target.dataset.confirm;

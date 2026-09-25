@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // Package controller manages rooms, members and invites, signs room configs
 // and serves the node API and the admin panel.
 package controller

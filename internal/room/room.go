@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 // Package room runs one virtual LAN: an AmneziaWG device on top of a TUN
 // interface (or an in-process network stack in userspace mode).
 package room

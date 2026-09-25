@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 // Package api defines the node <-> controller protocol.
 //
 // Requests are JSON, signed with the node key (pki.RequestHeaders).

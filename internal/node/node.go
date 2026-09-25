@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 // Package node is the zeropentime daemon: one shared socket, many rooms.
 //
 // Rooms come from two sources: static rooms in the config file, and rooms

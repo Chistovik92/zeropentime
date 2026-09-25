@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 // Package pki holds the signed and encrypted documents exchanged between the
 // controller and nodes.
 //
