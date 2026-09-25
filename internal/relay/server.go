@@ -4,6 +4,7 @@ package relay
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"log/slog"
 	"net"
@@ -53,6 +54,11 @@ type Server struct {
 
 	permMu sync.Mutex
 	perm   map[[2]string]permEntry
+
+	outMu   sync.Mutex
+	pc      *net.UDPConn
+	streams map[netip.AddrPort]func([]byte) error
+	nextID  uint64
 }
 
 type permEntry struct {
@@ -65,7 +71,7 @@ func NewServer(priv, pub identity.Key, auth Authorizer, log *slog.Logger) *Serve
 	return &Server{
 		priv: priv, pub: pub, auth: auth, log: log, now: time.Now,
 		byID: map[[sessLen]byte]*serverSession{}, byNode: map[string]*serverSession{},
-		perm: map[[2]string]permEntry{},
+		perm: map[[2]string]permEntry{}, streams: map[netip.AddrPort]func([]byte) error{},
 	}
 }
 
@@ -83,6 +89,9 @@ func (s *Server) ServeUDP(ctx context.Context, addr string) error {
 		return err
 	}
 	s.log.Info("relay listening", "addr", pc.LocalAddr().String())
+	s.outMu.Lock()
+	s.pc = pc
+	s.outMu.Unlock()
 	go func() {
 		<-ctx.Done()
 		pc.Close()
@@ -98,7 +107,50 @@ func (s *Server) ServeUDP(ctx context.Context, addr string) error {
 			continue
 		}
 		from = netip.AddrPortFrom(from.Addr().Unmap(), from.Port())
-		for _, o := range s.Handle(buf[:n], from) {
+		s.send(s.Handle(buf[:n], from))
+	}
+}
+
+// Streams (VLESS sessions) get pseudo addresses from this range, so the
+// relay core treats them like any other node address.
+var streamPrefix = netip.MustParsePrefix("fd7a:7a70:7273::/48")
+
+// ServeStream relays packets of one stream (a VLESS UDP session) until
+// read fails. Nodes behind blocked UDP reach the relay this way.
+func (s *Server) ServeStream(read func([]byte) (int, error), write func([]byte) error) {
+	s.outMu.Lock()
+	s.nextID++
+	a := streamPrefix.Addr().As16()
+	binary.BigEndian.PutUint64(a[8:], s.nextID)
+	addr := netip.AddrPortFrom(netip.AddrFrom16(a), 1)
+	s.streams[addr] = write
+	s.outMu.Unlock()
+	defer func() {
+		s.outMu.Lock()
+		delete(s.streams, addr)
+		s.outMu.Unlock()
+	}()
+	buf := make([]byte, maxFrame)
+	for {
+		n, err := read(buf)
+		if err != nil {
+			return
+		}
+		s.send(s.Handle(buf[:n], addr))
+	}
+}
+
+// send delivers frames to UDP addresses or to streams.
+func (s *Server) send(outs []Out) {
+	for _, o := range outs {
+		s.outMu.Lock()
+		w, isStream := s.streams[o.To]
+		pc := s.pc
+		s.outMu.Unlock()
+		switch {
+		case isStream:
+			w(o.Data)
+		case pc != nil && !streamPrefix.Contains(o.To.Addr()):
 			pc.WriteToUDPAddrPort(o.Data, o.To)
 		}
 	}
