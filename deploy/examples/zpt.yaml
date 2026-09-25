@@ -1,0 +1,39 @@
+# Пример конфигурации узла zeropentime (фаза 0: статические комнаты и пиры).
+#
+# 1. zpt keygen -key node.key           — ключ узла (один на устройство)
+# 2. zpt room new                       — секрет комнаты (один на комнату, раздать участникам)
+# 3. zpt pubkey -c zpt.yaml             — свой публичный ключ в каждой комнате -> отдать пирам
+# 4. zpt up -c zpt.yaml                 — запуск (нужны права администратора / root)
+
+key_file: node.key
+listen_port: 4790       # один UDP-порт на все комнаты
+log_level: info
+
+rooms:
+  - name: game          # интерфейс будет называться zpt-game
+    secret: REPLACE_WITH_OUTPUT_OF_zpt_room_new=
+    address: 10.100.1.1/24
+    # mtu: 1380         # по умолчанию максимально безопасный для AmneziaWG
+    # Необязательно: клиентские параметры AmneziaWG (у участников могут отличаться).
+    # obfuscation:
+    #   jc: 4           # количество мусорных пакетов перед рукопожатием
+    #   jmin: 40
+    #   jmax: 120
+    #   content_padding: "0-32"
+    #   i1: "<b 0xc0ff><r 32><t>"   # пакет-«подпись» перед рукопожатием
+    peers:
+      - name: bob-pc
+        public_key: REPLACE_WITH_BOBS_KEY_FROM_zpt_pubkey=
+        endpoint: 203.0.113.20:4790
+        allowed_ips: [10.100.1.2/32]
+        keepalive: 25
+
+  - name: work
+    secret: REPLACE_WITH_ANOTHER_ROOM_SECRET=
+    address: 10.100.2.1/24
+    peers:
+      - name: office
+        public_key: REPLACE_WITH_OFFICE_KEY=
+        endpoint: office.example.org:4790
+        allowed_ips: [10.100.2.2/32]
+        keepalive: 25
