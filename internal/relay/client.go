@@ -29,6 +29,9 @@ type Client struct {
 	write     func(pkt []byte, to netip.AddrPort) error
 	deliver   func(src [NodeIDLen]byte, payload []byte)
 	log       *slog.Logger
+	// OnReady, if set, is called (in its own goroutine) whenever a new
+	// session is established.
+	OnReady func()
 
 	mu    sync.Mutex
 	sess  *Session
@@ -77,6 +80,13 @@ func (c *Client) Run(ctx context.Context) {
 	}
 }
 
+// Hello registers again right away (after the transport changed).
+func (c *Client) Hello() {
+	if h, err := Hello(c.priv, c.pub, c.relayPub); err == nil {
+		c.write(h, c.Addr)
+	}
+}
+
 // Handle processes a datagram that came from the relay address.
 func (c *Client) Handle(pkt []byte) {
 	if IsWelcome(pkt, c.pub) {
@@ -90,6 +100,9 @@ func (c *Client) Handle(pkt []byte) {
 		c.mu.Unlock()
 		if first {
 			c.log.Info("relay session established", "relay", c.Addr)
+		}
+		if c.OnReady != nil {
+			go c.OnReady()
 		}
 		return
 	}

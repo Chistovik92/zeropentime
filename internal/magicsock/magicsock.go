@@ -60,7 +60,8 @@ type Conn struct {
 	disco atomic.Pointer[discoHandler]
 	relay atomic.Pointer[relayHook]
 
-	dropDirect atomic.Bool
+	dropDirect   atomic.Bool
+	dropRelayUDP atomic.Bool
 
 	closeOnce sync.Once
 	done      chan struct{}
@@ -161,7 +162,9 @@ func (c *Conn) readLoop() {
 			continue
 		}
 		if r := c.relay.Load(); r != nil && from == r.addr {
-			r.handle(bytes.Clone(pkt))
+			if !c.dropRelayUDP.Load() {
+				r.handle(bytes.Clone(pkt))
+			}
 			continue
 		}
 		if c.dropDirect.Load() {
@@ -189,6 +192,10 @@ func (c *Conn) dispatch(pkt []byte, from netip.AddrPort) {
 // do not come through the relay, emulating a NAT no hole can be punched in.
 // Tests only.
 func (c *Conn) DropDirectForTests(v bool) { c.dropDirect.Store(v) }
+
+// DropRelayUDPForTests makes the socket ignore the relay over UDP, as if
+// UDP were blocked on the way (tests only).
+func (c *Conn) DropRelayUDPForTests(v bool) { c.dropRelayUDP.Store(v) }
 
 // Relayed paths are shown to AmneziaWG as addresses in this private IPv6
 // range: the 80 bits after the prefix are the peer's node ID.

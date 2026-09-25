@@ -55,6 +55,17 @@ type PathStats struct {
 type Relay struct {
 	Addr string       `json:"addr"` // host:port (UDP)
 	Key  identity.Key `json:"key"`
+	// VLESS, if set, reaches the same relay over TCP when UDP is blocked.
+	VLESS *VLESS `json:"vless,omitempty"`
+}
+
+// VLESS describes a VLESS + REALITY entrance to a relay.
+type VLESS struct {
+	Addr       string       `json:"addr"`        // host:port (TCP)
+	ServerName string       `json:"server_name"` // the website REALITY imitates
+	PublicKey  identity.Key `json:"public_key"`
+	ShortID    string       `json:"short_id"` // 16 hex digits
+	User       string       `json:"user"`     // VLESS UUID
 }
 
 type JoinRequest struct {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-package vless
+package vlesssrv
 
 import (
 	"bufio"
@@ -18,6 +18,8 @@ import (
 	"net/netip"
 	"testing"
 	"time"
+
+	"github.com/Chistovik92/zeropentime/internal/vless"
 )
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -45,7 +47,7 @@ type testServer struct {
 	addr   string
 	pub    [32]byte
 	short  [8]byte
-	user   UUID
+	user   vless.UUID
 	dest   *httptest.Server
 	cancel context.CancelFunc
 }
@@ -68,10 +70,10 @@ func echoServer(t *testing.T) *testServer {
 	go Serve(ctx, ServerConfig{
 		Listen: ts.addr, Dest: ts.dest.Listener.Addr().String(), ServerNames: []string{"example.com"},
 		PrivateKey: priv, ShortID: ts.short,
-		Allowed: func(u UUID) bool { return u == ts.user },
-		OnUDP: func(p *PacketConn, _ netip.AddrPort, _ net.Addr) {
+		Allowed: func(u vless.UUID) bool { return u == ts.user },
+		OnUDP: func(p *vless.PacketConn, _ netip.AddrPort, _ net.Addr) {
 			defer p.Close()
-			buf := make([]byte, MaxPacket)
+			buf := make([]byte, vless.MaxPacket)
 			for {
 				n, err := p.ReadPacket(buf)
 				if err != nil {
@@ -84,16 +86,16 @@ func echoServer(t *testing.T) *testServer {
 	return ts
 }
 
-func (ts *testServer) client() ClientConfig {
-	return ClientConfig{Addr: ts.addr, ServerName: "example.com", PublicKey: ts.pub, ShortID: ts.short, User: ts.user}
+func (ts *testServer) client() vless.ClientConfig {
+	return vless.ClientConfig{Addr: ts.addr, ServerName: "example.com", PublicKey: ts.pub, ShortID: ts.short, User: ts.user}
 }
 
-func dial(t *testing.T, c ClientConfig) (*PacketConn, error) {
+func dial(t *testing.T, c vless.ClientConfig) (*vless.PacketConn, error) {
 	var err error
 	for range 50 { // the listener may not be up yet
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		var p *PacketConn
-		p, err = Dial(ctx, c, netip.MustParseAddrPort("127.0.0.1:3480"))
+		var p *vless.PacketConn
+		p, err = vless.Dial(ctx, c, netip.MustParseAddrPort("127.0.0.1:3480"))
 		cancel()
 		if err == nil {
 			return p, nil
@@ -129,7 +131,7 @@ func TestRealityVLESSEcho(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.Close()
-	buf := make([]byte, MaxPacket)
+	buf := make([]byte, vless.MaxPacket)
 	for _, msg := range [][]byte{[]byte("hello"), bytes.Repeat([]byte{7}, 1400), {}} {
 		if err := p.WritePacket(msg); err != nil {
 			t.Fatal(err)
@@ -175,11 +177,11 @@ func rootsOf(s *httptest.Server) *x509.CertPool {
 
 func TestPlainTLSServerRefused(t *testing.T) {
 	s := site(t)
-	c := ClientConfig{Addr: s.Listener.Addr().String(), ServerName: "example.com"}
+	c := vless.ClientConfig{Addr: s.Listener.Addr().String(), ServerName: "example.com"}
 	rand.Read(c.PublicKey[:])
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := Dial(ctx, c, netip.MustParseAddrPort("127.0.0.1:1")); err == nil {
+	if _, err := vless.Dial(ctx, c, netip.MustParseAddrPort("127.0.0.1:1")); err == nil {
 		t.Fatal("accepted a server that is not our REALITY server")
 	}
 }
@@ -194,14 +196,14 @@ func TestUnknownUserRejected(t *testing.T) {
 }
 
 func TestHeaders(t *testing.T) {
-	u, _ := ParseUUID("b831381d-6324-4d53-ad4f-8cda48b30811")
+	u, _ := vless.ParseUUID("b831381d-6324-4d53-ad4f-8cda48b30811")
 	if u.String() != "b831381d-6324-4d53-ad4f-8cda48b30811" {
 		t.Fatalf("uuid round trip: %s", u)
 	}
 	var b bytes.Buffer
-	req := Request{User: u, Command: CmdUDP, Dest: netip.MustParseAddrPort("198.51.100.10:3480")}
-	WriteRequest(&b, req)
-	got, err := ReadRequest(bufio.NewReader(&b))
+	req := vless.Request{User: u, Command: vless.CmdUDP, Dest: netip.MustParseAddrPort("198.51.100.10:3480")}
+	vless.WriteRequest(&b, req)
+	got, err := vless.ReadRequest(bufio.NewReader(&b))
 	if err != nil || got != req {
 		t.Fatalf("request round trip: %v %+v", err, got)
 	}

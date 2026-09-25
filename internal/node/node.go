@@ -32,6 +32,7 @@ import (
 	"github.com/Chistovik92/zeropentime/internal/portmap"
 	"github.com/Chistovik92/zeropentime/internal/relay"
 	"github.com/Chistovik92/zeropentime/internal/room"
+	"github.com/Chistovik92/zeropentime/internal/vless"
 )
 
 const (
@@ -57,6 +58,8 @@ type Options struct {
 	LocalAddrs func() []netip.Addr
 	// BlockDirectForTests accepts only relayed traffic (tests only).
 	BlockDirectForTests bool
+	// BlockUDPRelayForTests ignores the relay over UDP, forcing VLESS (tests only).
+	BlockUDPRelayForTests bool
 }
 
 // Node is a running daemon.
@@ -77,6 +80,7 @@ type Node struct {
 	disco    *discoMgr
 
 	relayMu     sync.Mutex
+	vlessConn   atomic.Pointer[vless.PacketConn]
 	relay       *relay.Client
 	relayAddr   string
 	relayCancel context.CancelFunc
@@ -106,6 +110,7 @@ func Start(o Options) (_ *Node, err error) {
 		return nil, err
 	}
 	sock.DropDirectForTests(o.BlockDirectForTests)
+	sock.DropRelayUDPForTests(o.BlockUDPRelayForTests)
 	ctx, cancel := context.WithCancel(context.Background())
 	n := &Node{
 		ID: o.Identity, opts: o, log: o.Log, sock: sock, ctx: ctx, cancel: cancel,
@@ -697,14 +702,23 @@ func (n *Node) ensureRelay(relays []api.Relay) {
 		n.relayCancel()
 	}
 	ctx, cancel := context.WithCancel(n.ctx)
-	c := relay.NewClient(addrs[0], want.Key, n.disco.priv, n.disco.pub, n.sock.WriteDirect,
+	c := relay.NewClient(addrs[0], want.Key, n.disco.priv, n.disco.pub, n.relayWrite,
 		func(src [relay.NodeIDLen]byte, payload []byte) { n.sock.Receive(payload, src) }, n.log)
+	// Peers learn from the controller that we are reachable via the relay.
+	c.OnReady = func() {
+		n.notifyChanged()
+		n.reapplyAll()
+	}
 	n.sock.SetRelay(addrs[0], c.Handle, c.Send)
 	n.relay, n.relayAddr, n.relayCancel = c, want.Addr, cancel
-	n.wg.Add(1)
+	n.wg.Add(2)
 	go func() {
 		defer n.wg.Done()
 		c.Run(ctx)
+	}()
+	go func() {
+		defer n.wg.Done()
+		n.relayTransport(ctx, c, want, addrs[0])
 	}()
 }
 

@@ -8,7 +8,8 @@
 #   zhostB (10.0.2.2) -- znatB [NAT] --+
 #
 # NAT-роутеры — nftables masquerade: обычный режим ведёт себя как конусный
-# NAT (порт сохраняется), fully-random — как симметричный.
+# NAT (порт сохраняется), fully-random — как симметричный, udp-blocked —
+# конусный NAT, который не выпускает UDP (только TCP: VLESS + REALITY).
 #
 # Запуск (нужен root): sudo bash test/natlab/run.sh КАТАЛОГ_С_БИНАРНИКАМИ
 set -Eeuo pipefail
@@ -55,8 +56,9 @@ nat_router() {
   ip -n "$host" link set lo up
   ip -n "$host" route add default via "$lan.1"
   ip netns exec "$ns" sysctl -qw net.ipv4.ip_forward=1
-  local flags=""
+  local flags="" udp_rule=""
   [ "$mode" = symmetric ] && flags="fully-random"
+  [ "$mode" = udp-blocked ] && udp_rule="iifname \"$ns-l\" meta l4proto udp drop"
   ip netns exec "$ns" nft -f - <<EOF
 table ip nat {
   chain postrouting_nat {
@@ -67,6 +69,7 @@ table ip nat {
 table ip filter {
   chain forward_filter {
     type filter hook forward priority 0; policy drop;
+    $udp_rule
     iifname "$ns-l" accept
     ct state established,related accept
   }
@@ -98,8 +101,15 @@ setup() {
 
 start_controller() {
   "$BIN/zpt-controller" useradd -db "$WORK/c.db" -login admin -admin >/dev/null
+  # The "real website" REALITY imitates: a TLS 1.3 server for lab.example.
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj /CN=lab.example \
+    -addext subjectAltName=DNS:lab.example -keyout "$WORK/site.key" -out "$WORK/site.crt" 2>/dev/null
+  ip netns exec zwan openssl s_server -quiet -accept "$CTRL_IP:9443" -tls1_3 -www \
+    -cert "$WORK/site.crt" -key "$WORK/site.key" >"$WORK/site.log" 2>&1 &
   ip netns exec zwan "$BIN/zpt-controller" serve -db "$WORK/c.db" -listen "$CTRL_IP:8080" -url "$CTRL_URL" \
-    -stun "$CTRL_IP:3478,$CTRL_IP:3479" -log-level debug >"$WORK/controller.log" 2>&1 &
+    -stun "$CTRL_IP:3478,$CTRL_IP:3479" -relay "$CTRL_IP:3480" \
+    -vless "$CTRL_IP:443" -vless-dest "$CTRL_IP:9443" -vless-sni lab.example \
+    -log-level debug >"$WORK/controller.log" 2>&1 &
   for _ in $(seq 1 50); do
     ip netns exec zwan curl -fsS "$CTRL_URL/healthz" >/dev/null 2>&1 && return 0
     sleep 0.2
@@ -124,6 +134,8 @@ EOF
 room_ip() { { ip -n "$1" -4 -o addr show dev zpt-lab 2>/dev/null || true; } | awk '{print $4}' | cut -d/ -f1; }
 
 nat_seen() { { grep -o 'msg="external address checked".*nat=[a-z-]*' "$WORK/$1.log" || true; } | tail -1 | sed 's/.*nat=//'; }
+
+want_nat() { case $1 in cone) echo cone ;; symmetric) echo symmetric ;; udp-blocked) echo udp-blocked ;; esac; }
 
 # path_seen NODE: how the node reaches its peer, from its log.
 path_seen() {
@@ -162,7 +174,7 @@ run_case() {
   done
   local natA natB
   natA=$(nat_seen a); natB=$(nat_seen b)
-  log "тип NAT: A=$natA (ожидался $([ "$modeA" = cone ] && echo cone || echo symmetric)), B=$natB"
+  log "тип NAT: A=$natA (ожидался $(want_nat "$modeA")), B=$natB (ожидался $(want_nat "$modeB"))"
   local path
   path=$(path_seen a)
   # The relay often answers before NAT holes are punched; a direct path
@@ -177,8 +189,8 @@ run_case() {
   log "связь: $ok за $((SECONDS - start)) с, путь: $path (ожидался $expect)"
 
   local want_nat_a want_nat_b
-  want_nat_a=$([ "$modeA" = cone ] && echo cone || echo symmetric)
-  want_nat_b=$([ "$modeB" = cone ] && echo cone || echo symmetric)
+  want_nat_a=$(want_nat "$modeA")
+  want_nat_b=$(want_nat "$modeB")
   if [ "$natA" != "$want_nat_a" ] || [ "$natB" != "$want_nat_b" ]; then
     log "ОШИБКА: тип NAT определён неверно"; FAILED=1; dump
   fi
@@ -207,6 +219,12 @@ trap cleanup EXIT
 run_case cone cone direct
 run_case cone symmetric relay
 run_case symmetric symmetric relay
+run_case udp-blocked cone relay
+if ! grep -q "relay reached through VLESS" "$WORK/a.log"; then
+  log "ОШИБКА: при закрытом UDP узел A не дошёл до relay через VLESS"; FAILED=1; CASE=udp-blocked-cone; dump
+else
+  log "узел A за закрытым UDP дошёл до relay через VLESS + REALITY"
+fi
 if [ "$FAILED" != 0 ]; then
   log "НЕ ПРОЙДЕНО"; exit 1
 fi

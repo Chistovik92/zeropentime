@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -26,6 +27,7 @@ const usage = `zpt-controller — контроллер zeropentime (админ-�
 
   zpt-controller serve   -db ФАЙЛ [-listen :8080] [-url https://...] [-tls-cert Ф -tls-key Ф] [-trust-proxy]
                          [-stun :3478,:3479] [-stun-public host:3478,host:3479] [-relay :3480] [-relay-public host:3480]
+                         [-vless :443 -vless-dest www.example.com:443 [-vless-sni ...] [-vless-public host:443]]
   zpt-controller useradd -db ФАЙЛ -login ЛОГИН [-admin]
   zpt-controller room create   -db ФАЙЛ -owner ЛОГИН -name ИМЯ [-subnet 10.100.1.0/24] [-policy manual|auto]
   zpt-controller room list     -db ФАЙЛ
@@ -59,6 +61,10 @@ func run(sub string, args []string) error {
 		stunPublic := fl.String("stun-public", "", "STUN-адреса для узлов (host:port через запятую); по умолчанию — хост из -url с портами из -stun")
 		relayListen := fl.String("relay", ":3480", "UDP-адрес встроенного relay (пересылка, когда прямой путь не работает); пусто — выключить")
 		relayPublic := fl.String("relay-public", "", "адрес relay для узлов (host:port); по умолчанию — хост из -url с портом из -relay")
+		vlessListen := fl.String("vless", "", "TCP-адрес входа в relay через VLESS + REALITY (обычно :443) для сетей, где закрыт UDP; пусто — выключено")
+		vlessDest := fl.String("vless-dest", "", "настоящий сайт, который имитирует REALITY (host:443), например www.microsoft.com:443")
+		vlessSNI := fl.String("vless-sni", "", "имена (SNI) этого сайта через запятую; по умолчанию — хост из -vless-dest")
+		vlessPublic := fl.String("vless-public", "", "адрес VLESS для узлов (host:port); по умолчанию — хост из -url с портом из -vless")
 		level := fl.String("log-level", "info", "debug|info|warn|error")
 		fl.Parse(args)
 		var l slog.Level
@@ -75,6 +81,7 @@ func run(sub string, args []string) error {
 			Listen: *listen, PublicURL: strings.TrimRight(*pub, "/"), TLSCert: *cert, TLSKey: *key, TrustProxy: *trust,
 			STUNListen: splitList(*stunListen), STUNPublic: splitList(*stunPublic),
 			RelayListen: *relayListen, RelayPublic: *relayPublic,
+			VLESSListen: *vlessListen, VLESSDest: *vlessDest, VLESSServerNames: sniList(*vlessSNI, *vlessDest), VLESSPublic: *vlessPublic,
 		}, svc, log)
 		if err != nil {
 			return err
@@ -195,6 +202,17 @@ func runAdmin(sub string, args []string) error {
 		return nil
 	}
 	return fmt.Errorf("неизвестная команда %s %s", sub, action)
+}
+
+// sniList defaults the REALITY server names to the destination host.
+func sniList(sni, dest string) []string {
+	if l := splitList(sni); len(l) > 0 {
+		return l
+	}
+	if host, _, err := net.SplitHostPort(dest); err == nil {
+		return []string{host}
+	}
+	return nil
 }
 
 func splitList(s string) []string {

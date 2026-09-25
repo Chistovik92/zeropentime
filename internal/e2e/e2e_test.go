@@ -7,6 +7,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -101,13 +102,29 @@ func newEnv(t *testing.T) *env {
 	relayAddr := rc.LocalAddr().String()
 	rc.Close()
 
-	srv, err := controller.NewServer(controller.Config{STUNListen: stunAddrs, RelayListen: relayAddr}, svc, quiet)
+	// The website REALITY imitates: a local TLS 1.3 server for example.com.
+	site := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("real site")) }))
+	site.TLS = &tls.Config{MinVersion: tls.VersionTLS13}
+	site.StartTLS()
+	t.Cleanup(site.Close)
+	vl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vlessAddr := vl.Addr().String()
+	vl.Close()
+
+	srv, err := controller.NewServer(controller.Config{
+		STUNListen: stunAddrs, RelayListen: relayAddr,
+		VLESSListen: vlessAddr, VLESSPublic: vlessAddr, VLESSDest: site.Listener.Addr().String(), VLESSServerNames: []string{"example.com"},
+	}, svc, quiet)
 	if err != nil {
 		t.Fatal(err)
 	}
 	hs := httptest.NewServer(srv.Handler())
 	t.Cleanup(hs.Close)
 	go srv.RunRelay(sctx)
+	go srv.RunVLESS(sctx)
 
 	ctx := context.Background()
 	if err := svc.CreateUser(ctx, nil, "admin", "correct horse battery", true); err != nil {
@@ -158,6 +175,11 @@ func (e *env) nodeWith(name string, locals func(uint16, []netip.Prefix) []netip.
 
 func (e *env) nodeOpts(name string, locals func(uint16, []netip.Prefix) []netip.AddrPort, blockDirect bool) *testNode {
 	e.t.Helper()
+	return e.nodeFull(name, locals, blockDirect, false)
+}
+
+func (e *env) nodeFull(name string, locals func(uint16, []netip.Prefix) []netip.AddrPort, blockDirect, blockUDPRelay bool) *testNode {
+	e.t.Helper()
 	id, _ := identity.Generate()
 	dir := e.t.TempDir()
 	port := 0
@@ -168,7 +190,7 @@ func (e *env) nodeOpts(name string, locals func(uint16, []netip.Prefix) []netip.
 	tn := &testNode{id: id, state: filepath.Join(dir, "state.json")}
 	n, err := node.Start(node.Options{
 		Config: cfg, Identity: id, Log: e.log.With("node", name), StatePath: tn.state, Version: "test",
-		LocalEndpoints: locals, BlockDirectForTests: blockDirect,
+		LocalEndpoints: locals, BlockDirectForTests: blockDirect, BlockUDPRelayForTests: blockUDPRelay,
 	})
 	if err != nil {
 		e.t.Fatal(err)
@@ -586,4 +608,29 @@ func TestSwitchFromRelayToDirect(t *testing.T) {
 		return nil
 	})
 	t.Logf("switched to direct in %s", took)
+}
+
+// 0.2.2: no direct path and no UDP to the relay (UDP blocked by the
+// network): nodes reach the relay through VLESS + REALITY over TCP.
+func TestRelayOverVLESS(t *testing.T) {
+	e := newEnv(t)
+	room := e.room("game", "auto")
+	none := func(uint16, []netip.Prefix) []netip.AddrPort { return nil }
+	a := e.nodeFull("a", none, true, true)
+	b := e.nodeFull("b", none, true, true)
+	e.mustJoin(a, e.invite(room.ID, 0, false), "alice", "active")
+	e.mustJoin(b, e.invite(room.ID, 0, false), "bob", "active")
+
+	took := eventually(t, 40*time.Second, "peers reach each other through the relay over VLESS", func() error {
+		if p := e.svc.Paths(a.id.NodeID()); p.Relay != 1 {
+			return fmt.Errorf("a paths %+v", p)
+		}
+		if p := e.svc.Paths(b.id.NodeID()); p.Relay != 1 {
+			return fmt.Errorf("b paths %+v", p)
+		}
+		return nil
+	})
+	t.Logf("relay over VLESS in %s", took)
+	srv := serveEcho(t, b, "game")
+	eventually(t, 15*time.Second, "traffic over VLESS", func() error { return talk(a, "game", srv, 3*time.Second) })
 }

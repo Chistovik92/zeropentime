@@ -4,16 +4,21 @@ package controller
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"time"
 
 	"github.com/Chistovik92/zeropentime/internal/api"
+	"github.com/Chistovik92/zeropentime/internal/identity"
 	"github.com/Chistovik92/zeropentime/internal/relay"
 	"github.com/Chistovik92/zeropentime/internal/stun"
+	"github.com/Chistovik92/zeropentime/internal/vless"
+	"github.com/Chistovik92/zeropentime/internal/vlesssrv"
 )
 
 // Config configures the HTTP server.
@@ -37,6 +42,16 @@ type Config struct {
 	// RelayPublic is the relay address given to nodes. Empty: the host of
 	// PublicURL (or of the request) with the RelayListen port.
 	RelayPublic string
+	// VLESSListen is the TCP address of the VLESS + REALITY entrance to the
+	// relay (usually :443). Empty: off.
+	VLESSListen string
+	// VLESSDest is the real website REALITY imitates ("host:443").
+	VLESSDest string
+	// VLESSServerNames are the names (SNI) of that website.
+	VLESSServerNames []string
+	// VLESSPublic is the address nodes dial. Empty: the host of PublicURL
+	// with the VLESSListen port.
+	VLESSPublic string
 }
 
 // Server is the controller HTTP server: node API and admin panel.
@@ -47,6 +62,7 @@ type Server struct {
 	panel   *panel
 	limiter loginLimiter
 	relay   *relay.Server
+	vless   *VLESSSecrets
 }
 
 // NewServer wires the handlers.
@@ -62,8 +78,34 @@ func NewServer(cfg Config, svc *Service, log *slog.Logger) (*Server, error) {
 			return nil, err
 		}
 		h.relay = relay.NewServer(priv, pub, relayAuth{svc}, log)
+		if cfg.VLESSListen != "" {
+			if cfg.VLESSDest == "" || len(cfg.VLESSServerNames) == 0 {
+				return nil, errors.New("VLESS needs the site REALITY imitates: set -vless-dest and -vless-sni")
+			}
+			v, err := svc.VLESSSecrets(context.Background())
+			if err != nil {
+				return nil, err
+			}
+			h.vless = &v
+		}
 	}
 	return h, nil
+}
+
+// RunVLESS serves the VLESS + REALITY entrance until ctx ends.
+func (h *Server) RunVLESS(ctx context.Context) error {
+	if h.vless == nil {
+		return nil
+	}
+	return vlesssrv.Serve(ctx, vlesssrv.ServerConfig{
+		Listen: h.cfg.VLESSListen, Dest: h.cfg.VLESSDest, ServerNames: h.cfg.VLESSServerNames,
+		PrivateKey: h.vless.PrivateKey, ShortID: h.vless.ShortID,
+		Allowed: func(u vless.UUID) bool { return u == vless.UUID(h.vless.User) },
+		OnUDP: func(p *vless.PacketConn, _ netip.AddrPort, _ net.Addr) {
+			defer p.Close()
+			h.relay.ServeStream(p.ReadPacket, p.WritePacket)
+		},
+	}, h.log)
 }
 
 // RunRelay serves the relay until ctx ends (ServeListener calls it).
@@ -75,7 +117,7 @@ func (h *Server) RunRelay(ctx context.Context) error {
 }
 
 // relays returns the relay list for nodes.
-func (h *Server) relays(r *http.Request) []api.Relay {
+func (h *Server) relays(req *http.Request) []api.Relay {
 	if h.relay == nil {
 		return nil
 	}
@@ -85,9 +127,22 @@ func (h *Server) relays(r *http.Request) []api.Relay {
 		if err != nil {
 			return nil
 		}
-		addr = net.JoinHostPort(h.publicHost(r), port)
+		addr = net.JoinHostPort(h.publicHost(req), port)
 	}
-	return []api.Relay{{Addr: addr, Key: h.relay.PublicKey()}}
+	r := api.Relay{Addr: addr, Key: h.relay.PublicKey()}
+	if h.vless != nil {
+		vaddr := h.cfg.VLESSPublic
+		if vaddr == "" {
+			if _, port, err := net.SplitHostPort(h.cfg.VLESSListen); err == nil {
+				vaddr = net.JoinHostPort(h.publicHost(req), port)
+			}
+		}
+		r.VLESS = &api.VLESS{
+			Addr: vaddr, ServerName: h.cfg.VLESSServerNames[0], PublicKey: identity.Key(h.vless.PublicKey),
+			ShortID: hex.EncodeToString(h.vless.ShortID[:]), User: vless.UUID(h.vless.User).String(),
+		}
+	}
+	return []api.Relay{r}
 }
 
 // publicHost is the host nodes use to reach this controller.
@@ -158,6 +213,11 @@ func (h *Server) ServeListener(ctx context.Context, ln net.Listener) error {
 		go func() {
 			if err := h.RunRelay(rctx); err != nil {
 				h.log.Error("relay stopped", "err", err)
+			}
+		}()
+		go func() {
+			if err := h.RunVLESS(rctx); err != nil {
+				h.log.Error("vless stopped", "err", err)
 			}
 		}()
 	}

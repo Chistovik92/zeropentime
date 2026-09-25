@@ -47,8 +47,11 @@ type Config struct {
 	LogLevel string `yaml:"log_level"`
 	// PortMap asks the router to forward the UDP port (UPnP / NAT-PMP).
 	// Default: on.
-	PortMap *bool  `yaml:"portmap"`
-	Rooms   []Room `yaml:"rooms"`
+	PortMap *bool `yaml:"portmap"`
+	// RelayTransport: "auto" (UDP, VLESS + REALITY when UDP is blocked),
+	// "udp" or "vless". Default: auto.
+	RelayTransport string `yaml:"relay_transport"`
+	Rooms          []Room `yaml:"rooms"`
 }
 
 // Room is one virtual LAN this node is a member of.
@@ -168,6 +171,11 @@ func DefaultKeyPath() string {
 func (c *Config) Validate() error {
 	if p := c.Port(); p < 0 || p > 65535 {
 		return fmt.Errorf("listen_port %d out of range", p)
+	}
+	switch c.RelayTransport {
+	case "", "auto", "udp", "vless":
+	default:
+		return fmt.Errorf("relay_transport must be auto, udp or vless, not %q", c.RelayTransport)
 	}
 	names := map[string]bool{}
 	secrets := map[obfs.Secret]bool{}

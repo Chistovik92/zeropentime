@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -696,4 +697,49 @@ func (a relayAuth) CanSend(src, dst string) bool {
 	var ok bool
 	err := a.s.st.Read(context.Background(), func(tx *store.Tx) (err error) { ok, err = tx.ShareActiveRoom(src, dst); return })
 	return err == nil && ok
+}
+
+// VLESSSecrets are the REALITY key, short ID and VLESS user of this
+// controller, created once.
+type VLESSSecrets struct {
+	PrivateKey [32]byte
+	PublicKey  [32]byte
+	ShortID    [8]byte
+	User       [16]byte
+}
+
+func (s *Service) VLESSSecrets(ctx context.Context) (VLESSSecrets, error) {
+	var v VLESSSecrets
+	err := s.st.Tx(ctx, func(tx *store.Tx) error {
+		load := func(key string, dst []byte) error {
+			b, err := tx.Setting(key)
+			if err == nil && len(b) == len(dst) {
+				copy(dst, b)
+				return nil
+			}
+			if err != nil && !errors.Is(err, store.ErrNotFound) {
+				return err
+			}
+			if _, err := rand.Read(dst); err != nil {
+				return err
+			}
+			return tx.SetSetting(key, dst)
+		}
+		if err := load("reality_key", v.PrivateKey[:]); err != nil {
+			return err
+		}
+		if err := load("reality_short_id", v.ShortID[:]); err != nil {
+			return err
+		}
+		return load("vless_user", v.User[:])
+	})
+	if err != nil {
+		return v, err
+	}
+	k, err := ecdh.X25519().NewPrivateKey(v.PrivateKey[:])
+	if err != nil {
+		return v, err
+	}
+	copy(v.PublicKey[:], k.PublicKey().Bytes())
+	return v, nil
 }

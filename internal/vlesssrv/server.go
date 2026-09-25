@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-package vless
+// Package vlesssrv is the server side of VLESS + REALITY (see package
+// vless). It lives apart from the client so nodes do not link the REALITY
+// server.
+package vlesssrv
 
 import (
 	"bufio"
@@ -12,6 +15,8 @@ import (
 	"time"
 
 	"github.com/xtls/reality"
+
+	"github.com/Chistovik92/zeropentime/internal/vless"
 )
 
 // ServerConfig configures a VLESS + REALITY server.
@@ -24,9 +29,9 @@ type ServerConfig struct {
 	PrivateKey  [32]byte
 	ShortID     [8]byte
 	// Allowed reports whether a VLESS user may connect.
-	Allowed func(UUID) bool
+	Allowed func(vless.UUID) bool
 	// OnUDP gets each authenticated UDP session; it owns the stream.
-	OnUDP func(p *PacketConn, dest netip.AddrPort, remote net.Addr)
+	OnUDP func(p *vless.PacketConn, dest netip.AddrPort, remote net.Addr)
 }
 
 // Serve runs the server until ctx ends.
@@ -73,16 +78,16 @@ func Serve(ctx context.Context, cfg ServerConfig, log *slog.Logger) error {
 func handle(conn net.Conn, cfg ServerConfig, log *slog.Logger) {
 	conn.SetDeadline(time.Now().Add(15 * time.Second))
 	r := bufio.NewReaderSize(conn, 64<<10)
-	req, err := ReadRequest(r)
-	if err != nil || !cfg.Allowed(req.User) || req.Command != CmdUDP {
+	req, err := vless.ReadRequest(r)
+	if err != nil || !cfg.Allowed(req.User) || req.Command != vless.CmdUDP {
 		conn.Close()
 		return
 	}
-	if err := WriteResponse(conn); err != nil {
+	if err := vless.WriteResponse(conn); err != nil {
 		conn.Close()
 		return
 	}
 	conn.SetDeadline(time.Time{})
 	log.Debug("vless session", "remote", conn.RemoteAddr().String())
-	cfg.OnUDP(NewPacketConn(conn, r), req.Dest, conn.RemoteAddr())
+	cfg.OnUDP(vless.NewPacketConn(conn, r), req.Dest, conn.RemoteAddr())
 }
