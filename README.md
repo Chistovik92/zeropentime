@@ -36,6 +36,17 @@ zpt-controller serve -db controller.db -listen :8080 -url https://zpt.example.or
 
 Забыли пароль: `zpt-controller passwd -db controller.db -login admin`.
 
+### Если у участников блокируют UDP: VLESS + REALITY
+
+Контроллер может принимать трафик relay через VLESS внутри REALITY на TCP/443. Для наблюдателя это TLS 1.3 к настоящему сайту (его сертификат подставляется), а любой, кто подключится без ключа, попадёт на этот сайт.
+
+```bash
+zpt-controller serve -db controller.db -url https://zpt.example.org \
+  -vless :443 -vless-dest www.microsoft.com:443
+```
+
+`-vless-dest` — сайт, который будет имитироваться: с TLS 1.3, не за вашим доменом. Ключи REALITY и VLESS создаются автоматически и раздаются узлам. Узлы переходят на VLESS сами, если UDP до relay не отвечает (или всегда — `relay_transport: vless` в конфиге узла). Порт 443 должен быть свободен: в docker-compose с Caddy используйте другой порт, например `-vless :8443`, либо отдельный сервер.
+
 ### В Docker
 
 Готовый образ (linux/amd64, linux/arm64): `ghcr.io/chistovik92/zeropentime-controller`.
