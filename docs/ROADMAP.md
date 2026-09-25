@@ -35,7 +35,7 @@
 Что сделать для выпуска:
 - [x] лицензия: узел — MPL-2.0, контроллер — AGPL-3.0 ([LICENSING.md](../LICENSING.md)); DCO для вклада;
 - [x] полные тексты лицензий в `LICENSE` и `LICENSE.AGPL`;
-- [ ] CI зелёный на GitHub (Linux, Windows, macOS);
+- [x] CI зелёный на GitHub (Linux, Windows, macOS; с -race на Linux и macOS);
 - [x] goreleaser: бинарники Windows/Linux amd64/arm64, контрольные суммы, заметки к релизу из CHANGELOG, выпуск по тегу ([RELEASING.md](../RELEASING.md));
 - [x] политика безопасности ([SECURITY.md](../SECURITY.md));
 - [ ] ручная проверка: Windows ↔ Linux в одной LAN — ping, SMB, исключение из панели ≤ 5 с.
