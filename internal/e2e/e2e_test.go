@@ -559,3 +559,31 @@ func (e *env) panelPage(path string) string {
 	}
 	return string(body)
 }
+
+// Regression (0.2.1): the relay answers before NAT holes are punched, so a
+// peer is first reached through it. Once a direct path works, the nodes
+// must switch to it within seconds, not at the next slow re-check.
+func TestSwitchFromRelayToDirect(t *testing.T) {
+	e := newEnv(t)
+	room := e.room("game", "auto")
+	none := func(uint16, []netip.Prefix) []netip.AddrPort { return nil }
+	a, b := e.nodeOpts("a", none, true), e.nodeOpts("b", none, true)
+	e.mustJoin(a, e.invite(room.ID, 0, false), "alice", "active")
+	e.mustJoin(b, e.invite(room.ID, 0, false), "bob", "active")
+	eventually(t, 30*time.Second, "relayed first", func() error {
+		if p := e.svc.Paths(a.id.NodeID()); p.Relay != 1 {
+			return fmt.Errorf("paths %+v", p)
+		}
+		return nil
+	})
+
+	a.node.DropDirectForTests(false)
+	b.node.DropDirectForTests(false)
+	took := eventually(t, 10*time.Second, "switched to the direct path", func() error {
+		if p := e.svc.Paths(a.id.NodeID()); p.Direct != 1 || p.Relay != 0 {
+			return fmt.Errorf("paths %+v", p)
+		}
+		return nil
+	})
+	t.Logf("switched to direct in %s", took)
+}

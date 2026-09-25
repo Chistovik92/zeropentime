@@ -165,6 +165,15 @@ run_case() {
   log "тип NAT: A=$natA (ожидался $([ "$modeA" = cone ] && echo cone || echo symmetric)), B=$natB"
   local path
   path=$(path_seen a)
+  # The relay often answers before NAT holes are punched; a direct path
+  # must replace it shortly.
+  if [ "$ok" = yes ] && [ "$expect" = direct ]; then
+    for _ in $(seq 1 30); do
+      path=$(path_seen a)
+      [ "$path" = direct ] && break
+      sleep 1
+    done
+  fi
   log "связь: $ok за $((SECONDS - start)) с, путь: $path (ожидался $expect)"
 
   local want_nat_a want_nat_b

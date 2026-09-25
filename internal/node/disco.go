@@ -25,9 +25,13 @@ const (
 	// traffic to the other before the other's packets arrive).
 	discoSearch = 2 * time.Second
 	// Pings older than this are forgotten.
-	discoPingTTL    = 5 * time.Second
-	maxCandidates   = 12
-	maxPendingPings = 64
+	discoPingTTL = 5 * time.Second
+	// While a peer is only reachable through the relay, a direct path is
+	// searched as often as without any path for this long after the peer
+	// appeared: the relay usually answers before NAT holes are punched.
+	discoEagerDirect = time.Minute
+	maxCandidates    = 12
+	maxPendingPings  = 64
 )
 
 type discoPath struct {
@@ -48,6 +52,7 @@ type discoPeer struct {
 	learned    []netip.AddrPort // addresses pings came from
 	best       discoPath
 	lastPing   time.Time
+	since      time.Time // when we learned about the peer
 	sent       map[disco.TxID]sentPing
 }
 
@@ -89,7 +94,7 @@ func (d *discoMgr) setPeers(ctrl string, peers map[string]api.Peer, active map[s
 			if ok {
 				delete(d.byKey, dp.key)
 			}
-			dp = &discoPeer{nodeID: id, key: p.DiscoKey, sent: map[disco.TxID]sentPing{}}
+			dp = &discoPeer{nodeID: id, key: p.DiscoKey, sent: map[disco.TxID]sentPing{}, since: d.now()}
 			d.peers[id] = dp
 			d.byKey[p.DiscoKey] = dp
 		}
@@ -185,8 +190,11 @@ func (d *discoMgr) tick() {
 		targets := append(slices.Clone(dp.candidates), dp.learned...)
 		switch {
 		case dp.best.addr.IsValid() && magicsock.IsRelay(dp.best.addr):
-			// Relayed for now: keep looking for a direct path, less often.
-			interval = discoRecheck
+			// Relayed for now: keep looking for a direct path — eagerly at
+			// first, then less often.
+			if now.Sub(dp.since) >= discoEagerDirect {
+				interval = discoRecheck
+			}
 		case dp.best.addr.IsValid():
 			interval = discoRecheck
 			targets = []netip.AddrPort{dp.best.addr}

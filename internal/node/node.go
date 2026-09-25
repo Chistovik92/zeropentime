@@ -164,6 +164,9 @@ func (n *Node) changedCh() <-chan struct{} {
 	return n.changed
 }
 
+// DropDirectForTests switches off (or on) direct traffic at runtime (tests only).
+func (n *Node) DropDirectForTests(v bool) { n.sock.DropDirectForTests(v) }
+
 // Port is the UDP port all rooms share.
 func (n *Node) Port() uint16 { return n.sock.Port() }
 
