@@ -49,6 +49,9 @@ type Member struct {
 	WGKey  identity.Key `json:"wg_key"`
 	IP     netip.Addr   `json:"ip"`
 	Tags   []string     `json:"tags,omitempty"`
+	// Routes are networks behind this member the room may reach through
+	// it (approved by a room admin).
+	Routes []netip.Prefix `json:"routes,omitempty"`
 }
 
 // RoomConfig is the signed description of a room.
@@ -104,9 +107,23 @@ func VerifyRoomConfig(pub ed25519.PublicKey, s *Signed) (*RoomConfig, error) {
 		if !c.Subnet.Contains(m.IP) || seen[m.IP] {
 			return nil, fmt.Errorf("pki: member %s has invalid or duplicate ip %s", m.NodeID, m.IP)
 		}
+		for _, r := range m.Routes {
+			if !ValidRoute(r) || r.Overlaps(c.Subnet) {
+				return nil, fmt.Errorf("pki: member %s has invalid route %s", m.NodeID, r)
+			}
+		}
 		seen[m.IP] = true
 	}
 	return &c, nil
+}
+
+// ValidRoute reports whether a network may be routed through a member:
+// a masked IPv4 network, not the default route (exit nodes come later)
+// and not a loopback, link-local or multicast range.
+func ValidRoute(p netip.Prefix) bool {
+	a := p.Addr()
+	return p.IsValid() && a.Is4() && p == p.Masked() && p.Bits() >= 8 &&
+		!a.IsLoopback() && !a.IsLinkLocalUnicast() && !a.IsMulticast() && !a.IsUnspecified()
 }
 
 // RoomKeyString encodes a room public key for invite links.

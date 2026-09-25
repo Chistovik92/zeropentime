@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"math/big"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -315,6 +316,10 @@ const (
 	ActBan     MemberAction = "ban"
 	ActUnban   MemberAction = "unban"
 	ActKick    MemberAction = "kick"
+	// ActRoutes approves the networks the member currently offers;
+	// ActNoRoutes withdraws the approval.
+	ActRoutes   MemberAction = "routes"
+	ActNoRoutes MemberAction = "noroutes"
 )
 
 func (s *Service) MemberAction(ctx context.Context, u *store.User, roomID, nodeID string, act MemberAction) error {
@@ -335,6 +340,24 @@ func (s *Service) MemberAction(ctx context.Context, u *store.User, roomID, nodeI
 			err = tx.UpdateMember(m)
 		case ActKick:
 			err = tx.DeleteMember(roomID, nodeID)
+		case ActRoutes:
+			r, rerr := tx.RoomByID(roomID)
+			if rerr != nil {
+				return rerr
+			}
+			m.Routes = nil
+			for _, p := range m.Offered {
+				if !p.Overlaps(r.Subnet) {
+					m.Routes = append(m.Routes, p)
+				}
+			}
+			if len(m.Routes) == 0 {
+				return invalid("участник не предлагает сетей для маршрутизации (advertise_routes в его конфиге)")
+			}
+			err = tx.UpdateMember(m)
+		case ActNoRoutes:
+			m.Routes = nil
+			err = tx.UpdateMember(m)
 		default:
 			return invalid("неизвестное действие %q", act)
 		}
@@ -460,6 +483,11 @@ func reach(e api.Endpoints, remote netip.Addr, version string) store.Reach {
 	}
 	if len(e.Relay) <= 255 {
 		r.Relay = e.Relay
+	}
+	for _, p := range e.Routes {
+		if pki.ValidRoute(p) && len(r.Routes) < 16 && !slices.Contains(r.Routes, p) {
+			r.Routes = append(r.Routes, p)
+		}
 	}
 	if len(r.Version) > 32 {
 		r.Version = r.Version[:32]
@@ -628,7 +656,14 @@ func (s *Service) netMap(ctx context.Context, nodeID string) (*api.NetMap, error
 					}
 					var k identity.Key
 					copy(k[:], o.WGKey)
-					cfg.Members = append(cfg.Members, pki.Member{NodeID: o.NodeID, Name: o.Name, WGKey: k, IP: o.IP, Tags: o.Tags})
+					// Only routes both approved and still offered by the node.
+					var routes []netip.Prefix
+					for _, p := range o.Routes {
+						if slices.Contains(o.Offered, p) {
+							routes = append(routes, p)
+						}
+					}
+					cfg.Members = append(cfg.Members, pki.Member{NodeID: o.NodeID, Name: o.Name, WGKey: k, IP: o.IP, Tags: o.Tags, Routes: routes})
 					if o.NodeID != nodeID {
 						if _, ok := nm.Peers[o.NodeID]; !ok {
 							n, err := tx.NodeByID(o.NodeID)
@@ -745,4 +780,24 @@ func (s *Service) VLESSSecrets(ctx context.Context) (VLESSSecrets, error) {
 	}
 	copy(v.PublicKey[:], k.PublicKey().Bytes())
 	return v, nil
+}
+
+// WatchExternalChanges notices changes made to the database by other
+// processes (zpt-controller room / invite / routes commands while the
+// server runs) and wakes the nodes, instead of letting them wait for the
+// end of their long poll.
+func (s *Service) WatchExternalChanges(ctx context.Context) {
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			var v int64
+			if err := s.st.Read(ctx, func(tx *store.Tx) (err error) { v, err = tx.Version(); return }); err == nil {
+				s.hub.set(v)
+			}
+		}
+	}
 }

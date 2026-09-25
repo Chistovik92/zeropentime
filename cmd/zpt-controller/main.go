@@ -32,6 +32,7 @@ const usage = `zpt-controller — контроллер zeropentime (админ-�
   zpt-controller room create   -db ФАЙЛ -owner ЛОГИН -name ИМЯ [-subnet 10.100.1.0/24] [-policy manual|auto]
   zpt-controller room list     -db ФАЙЛ
   zpt-controller invite create -db ФАЙЛ -room ID -url https://... [-uses 1] [-hours 24] [-auto] [-note ТЕКСТ]
+  zpt-controller routes approve|revoke -db ФАЙЛ -room ID -member ИМЯ
   zpt-controller passwd  -db ФАЙЛ -login ЛОГИН
   zpt-controller version
 `
@@ -118,7 +119,7 @@ func run(sub string, args []string) error {
 		}
 		fmt.Printf("новый пароль для %s: %s\n", *login, pw)
 		return nil
-	case "room", "invite":
+	case "room", "invite", "routes":
 		return runAdmin(sub, args)
 	case "version":
 		fmt.Println("zpt-controller", version)
@@ -200,6 +201,35 @@ func runAdmin(sub string, args []string) error {
 		}
 		fmt.Println(inv.String())
 		return nil
+	}
+	if sub == "routes" && (action == "approve" || action == "revoke") {
+		room := fl.String("room", "", "ID комнаты")
+		name := fl.String("member", "", "имя участника")
+		fl.Parse(args)
+		svc, closeDB, err := openService(*db, slog.New(slog.DiscardHandler))
+		if err != nil {
+			return err
+		}
+		defer closeDB()
+		admin := &store.User{IsAdmin: true, Login: "cli"}
+		v, err := svc.Room(ctx, admin, *room)
+		if err != nil {
+			return err
+		}
+		act := controller.ActRoutes
+		if action == "revoke" {
+			act = controller.ActNoRoutes
+		}
+		for _, m := range v.Members {
+			if m.Name == *name {
+				if err := svc.MemberAction(ctx, admin, *room, m.NodeID, act); err != nil {
+					return err
+				}
+				fmt.Println("готово")
+				return nil
+			}
+		}
+		return fmt.Errorf("в комнате нет участника %q", *name)
 	}
 	return fmt.Errorf("неизвестная команда %s %s", sub, action)
 }

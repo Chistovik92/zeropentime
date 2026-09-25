@@ -33,11 +33,14 @@ type Room struct {
 	// Net is the in-process network stack; set only in userspace mode.
 	Net *netstack.Net
 
-	ifname string
-	dev    *device.Device
-	bcast  *tunwrap.Device
-	log    *slog.Logger
-	psk    string
+	ifname  string
+	dev     *device.Device
+	bcast   *tunwrap.Device
+	tdev    tun.Device // the OS interface (nil in userspace mode)
+	routes  []netip.Prefix
+	routing []netip.Prefix // networks this node routes for the room
+	log     *slog.Logger
+	psk     string
 
 	self identity.Key // this node's public key in the room
 
@@ -94,6 +97,7 @@ func Up(o Options) (_ *Room, err error) {
 			tdev.Close()
 			return nil, fmt.Errorf("room %s: configure %s: %w", c.Name, r.ifname, err)
 		}
+		r.tdev = tdev
 	}
 
 	r.bcast = tunwrap.New(tdev, c.Address, c.Broadcast)
@@ -209,10 +213,60 @@ func peersDiff(old map[identity.Key]config.Peer, peers []config.Peer, psk string
 // SetBroadcast changes how broadcast and multicast are shared ("on", "off", "mdns").
 func (r *Room) SetBroadcast(mode string) { r.bcast.SetMode(mode) }
 
+// SetRoutes sends traffic for these networks (other members' LANs) into
+// the room. Routes that disappear are removed.
+func (r *Room) SetRoutes(routes []netip.Prefix) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.tdev != nil {
+		for _, p := range r.routes {
+			if !slices.Contains(routes, p) {
+				if err := setRoute(r.tdev, r.ifname, p, false); err != nil {
+					r.log.Warn("remove route", "route", p, "err", err)
+				}
+			}
+		}
+		for _, p := range routes {
+			if !slices.Contains(r.routes, p) {
+				if err := setRoute(r.tdev, r.ifname, p, true); err != nil {
+					r.log.Warn("add route", "route", p, "err", err)
+					continue
+				}
+				r.log.Info("route through the room", "route", p)
+			}
+		}
+	}
+	r.routes = slices.Clone(routes)
+}
+
+// SetRouter makes this node route the room's traffic into the given
+// networks (subnet router); nil turns it off.
+func (r *Room) SetRouter(routes []netip.Prefix) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if slices.Equal(routes, r.routing) || r.tdev == nil {
+		r.routing = slices.Clone(routes)
+		return
+	}
+	if len(routes) == 0 {
+		disableRouter(r.ifname)
+		r.log.Info("subnet router off")
+	} else if err := enableRouter(r.ifname, r.Address, routes); err != nil {
+		r.log.Warn("cannot route for the room", "routes", routes, "err", err)
+		return
+	} else {
+		r.log.Info("subnet router on", "routes", routes)
+	}
+	r.routing = slices.Clone(routes)
+}
+
 // Close tears the room down.
 func (r *Room) Close() {
 	r.mu.Lock()
 	r.closed = true
+	if len(r.routing) > 0 && r.tdev != nil {
+		disableRouter(r.ifname)
+	}
 	r.mu.Unlock()
 	r.dev.Close()
 	r.log.Info("room down")

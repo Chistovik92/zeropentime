@@ -51,7 +51,10 @@ type Config struct {
 	// RelayTransport: "auto" (UDP, VLESS + REALITY when UDP is blocked),
 	// "udp" or "vless". Default: auto.
 	RelayTransport string `yaml:"relay_transport"`
-	Rooms          []Room `yaml:"rooms"`
+	// AdvertiseRoutes offers networks behind this node to the rooms it is
+	// in (subnet router, Linux only for now); room admins approve them.
+	AdvertiseRoutes []netip.Prefix `yaml:"advertise_routes"`
+	Rooms           []Room         `yaml:"rooms"`
 }
 
 // Room is one virtual LAN this node is a member of.
@@ -68,6 +71,12 @@ type Room struct {
 	Broadcast   string       `yaml:"broadcast"`
 	Obfuscation *Obfuscation `yaml:"obfuscation"`
 	Peers       []Peer       `yaml:"peers"`
+
+	// Set by the node for rooms from controllers (not in the config file):
+	// Routes are other members' networks to send into the room; Routing
+	// are this node's networks it routes for the room (subnet router).
+	Routes  []netip.Prefix `yaml:"-"`
+	Routing []netip.Prefix `yaml:"-"`
 }
 
 // Obfuscation overrides AmneziaWG parameters that may differ between members
@@ -174,6 +183,11 @@ func DefaultKeyPath() string {
 func (c *Config) Validate() error {
 	if p := c.Port(); p < 0 || p > 65535 {
 		return fmt.Errorf("listen_port %d out of range", p)
+	}
+	for _, p := range c.AdvertiseRoutes {
+		if !p.IsValid() || p != p.Masked() || !p.Addr().Is4() || p.Bits() < 8 {
+			return fmt.Errorf("advertise_routes: %s must be an IPv4 network like 192.168.1.0/24", p)
+		}
 	}
 	switch c.RelayTransport {
 	case "", "auto", "udp", "vless":

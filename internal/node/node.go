@@ -230,6 +230,8 @@ func (n *Node) startLocked(key, controller string, rc config.Room) error {
 		n.sock.Unbind(prof.TagKey)
 		return err
 	}
+	r.SetRoutes(rc.Routes)
+	r.SetRouter(rc.Routing)
 	n.rooms[key] = &running{room: r, tagKey: prof.TagKey, controller: controller, cfg: rc}
 	return nil
 }
@@ -417,6 +419,7 @@ func (n *Node) endpoints(url string) api.Endpoints {
 		DiscoKey:  n.discoPub(),
 		Relay:     n.relayReadyAddr(),
 		Paths:     n.pathStats(),
+		Routes:    n.opts.Config.AdvertiseRoutes,
 	}
 }
 
@@ -480,6 +483,8 @@ func (n *Node) apply(url string, nm *api.NetMap) {
 					continue
 				}
 				cur.room.SetBroadcast(rc.Broadcast)
+				cur.room.SetRoutes(rc.Routes)
+				cur.room.SetRouter(rc.Routing)
 				cur.cfg = rc
 				continue
 			}
@@ -521,15 +526,25 @@ func (n *Node) roomFromConfig(url, keyStr string, rs api.RoomState, nm *api.NetM
 	for _, m := range cfg.Members {
 		if m.NodeID == me {
 			rc.Address = netip.PrefixFrom(m.IP, cfg.Subnet.Bits())
+			rc.Routing = m.Routes
 			found = true
 			continue
 		}
 		active[m.NodeID] = true
+		allowed := []netip.Prefix{netip.PrefixFrom(m.IP, 32)}
+		for _, r := range m.Routes {
+			if why := n.routeConflictLocked(r, rs.RoomID, cfg.Subnet); why != "" {
+				n.log.Warn("not using a member's network", "room", cfg.Name, "member", m.Name, "route", r, "reason", why)
+				continue
+			}
+			allowed = append(allowed, r)
+			rc.Routes = append(rc.Routes, r)
+		}
 		rc.Peers = append(rc.Peers, config.Peer{
 			Name:       m.Name,
 			PublicKey:  m.WGKey,
 			Endpoint:   n.peerEndpoint(m.NodeID, chooseEndpoint(nm.Peers[m.NodeID], nm.ObservedIP, n.localPrefixes())),
-			AllowedIPs: []netip.Prefix{netip.PrefixFrom(m.IP, 32)},
+			AllowedIPs: allowed,
 			Keepalive:  PeerKeepalive,
 		})
 	}
@@ -537,6 +552,34 @@ func (n *Node) roomFromConfig(url, keyStr string, rs api.RoomState, nm *api.NetM
 		return nil, nil
 	}
 	return rc, nil
+}
+
+// routeConflictLocked explains why a member's network must not be routed
+// here ("" if it may): it would shadow a network of this machine, this
+// room, another room, or a network another room already routes.
+func (n *Node) routeConflictLocked(r netip.Prefix, roomID string, subnet netip.Prefix) string {
+	if r.Overlaps(subnet) {
+		return "overlaps the room subnet"
+	}
+	for _, p := range n.localPrefixes() {
+		if !p.Addr().IsLoopback() && p.Overlaps(r) {
+			return "overlaps a local network (" + p.String() + ")"
+		}
+	}
+	for key, o := range n.rooms {
+		if key == roomID {
+			continue
+		}
+		if o.cfg.Address.Masked().Overlaps(r) {
+			return "overlaps room " + o.cfg.Name
+		}
+		for _, x := range o.cfg.Routes {
+			if x.Overlaps(r) {
+				return "already routed through room " + o.cfg.Name
+			}
+		}
+	}
+	return ""
 }
 
 // peerEndpoint prefers the path disco confirmed over the controller's guess.

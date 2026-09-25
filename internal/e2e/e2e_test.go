@@ -182,10 +182,18 @@ func (e *env) nodeOpts(name string, locals func(uint16, []netip.Prefix) []netip.
 
 func (e *env) nodeFull(name string, locals func(uint16, []netip.Prefix) []netip.AddrPort, blockDirect, blockUDPRelay bool) *testNode {
 	e.t.Helper()
+	return e.nodeCfg(name, locals, blockDirect, blockUDPRelay, nil)
+}
+
+func (e *env) nodeCfg(name string, locals func(uint16, []netip.Prefix) []netip.AddrPort, blockDirect, blockUDPRelay bool, tweak func(*config.Config)) *testNode {
+	e.t.Helper()
 	id, _ := identity.Generate()
 	dir := testutil.TempDir(e.t)
 	port := 0
 	cfg := &config.Config{ListenPort: &port, Userspace: true}
+	if tweak != nil {
+		tweak(cfg)
+	}
 	if err := cfg.Validate(); err != nil {
 		e.t.Fatal(err)
 	}
@@ -635,4 +643,47 @@ func TestRelayOverVLESS(t *testing.T) {
 	t.Logf("relay over VLESS in %s", took)
 	srv := serveEcho(t, b, "game")
 	eventually(t, 15*time.Second, "traffic over VLESS", func() error { return talk(a, "game", srv, 3*time.Second) })
+}
+
+// 0.3.0: a member offers the network behind it; only after a room admin
+// approves does it reach the other members (signed in the room config),
+// and revoking takes it away again.
+func TestSubnetRouteApproval(t *testing.T) {
+	e := newEnv(t)
+	room := e.room("game", "auto")
+	none := func(uint16, []netip.Prefix) []netip.AddrPort { return nil }
+	lan := netip.MustParsePrefix("192.168.77.0/24")
+	a := e.node("a")
+	b := e.nodeCfg("b", none, false, false, func(c *config.Config) { c.AdvertiseRoutes = []netip.Prefix{lan} })
+	e.mustJoin(a, e.invite(room.ID, 0, false), "alice", "active")
+	e.mustJoin(b, e.invite(room.ID, 0, false), "bob", "active")
+
+	peerHas := func(want bool) func() error {
+		return func() error {
+			r, err := a.node.Room("game")
+			if err != nil {
+				return err
+			}
+			stats, _ := r.Stats()
+			if got := strings.Contains(stats, "allowed_ip=192.168.77.0/24"); got != want {
+				return fmt.Errorf("route present=%v, want %v", got, want)
+			}
+			return nil
+		}
+	}
+	eventually(t, 15*time.Second, "b offers its network", func() error {
+		v, _ := e.svc.Room(context.Background(), e.admin, room.ID)
+		for _, m := range v.Members {
+			if m.Name == "bob" && len(m.Offered) == 1 {
+				return nil
+			}
+		}
+		return errors.New("not offered yet")
+	})
+	eventually(t, 5*time.Second, "not routed before approval", peerHas(false))
+
+	e.act(room.ID, b, controller.ActRoutes)
+	eventually(t, 10*time.Second, "routed after approval", peerHas(true))
+	e.act(room.ID, b, controller.ActNoRoutes)
+	eventually(t, 10*time.Second, "not routed after revoke", peerHas(false))
 }

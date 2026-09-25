@@ -12,6 +12,7 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -57,6 +58,13 @@ var funcs = template.FuncMap{
 	},
 	"date": func(t time.Time) string { return t.Format("02.01.2006 15:04") },
 	"join": strings.Join,
+	"prefixes": func(ps []netip.Prefix) string {
+		var s []string
+		for _, p := range ps {
+			s = append(s, p.String())
+		}
+		return strings.Join(s, ", ")
+	},
 	"uses": func(n int) string {
 		if n < 0 {
 			return "без ограничений"
@@ -372,7 +380,8 @@ func (h *Server) memberAction(w http.ResponseWriter, r *http.Request, u *store.U
 	id := r.PathValue("id")
 	act := MemberAction(r.PathValue("action"))
 	err := h.svc.MemberAction(r.Context(), u, id, r.PathValue("node"), act)
-	msg := map[MemberAction]string{ActApprove: "Участник одобрен", ActBan: "Участник заблокирован", ActUnban: "Блокировка снята", ActKick: "Участник исключён"}[act]
+	msg := map[MemberAction]string{ActApprove: "Участник одобрен", ActBan: "Участник заблокирован", ActUnban: "Блокировка снята", ActKick: "Участник исключён",
+		ActRoutes: "Маршруты разрешены", ActNoRoutes: "Маршруты отозваны"}[act]
 	back(w, r, "/rooms/"+id, err, msg)
 }
 

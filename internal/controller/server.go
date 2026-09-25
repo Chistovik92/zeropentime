@@ -194,6 +194,7 @@ func (h *Server) Serve(ctx context.Context) error {
 
 // ServeListener runs the server on an existing listener.
 func (h *Server) ServeListener(ctx context.Context, ln net.Listener) error {
+	go h.svc.WatchExternalChanges(ctx)
 	if len(h.cfg.STUNListen) > 0 {
 		sctx, cancel := context.WithCancel(ctx)
 		defer cancel()

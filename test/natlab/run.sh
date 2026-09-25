@@ -28,7 +28,7 @@ trap 'echo "[natlab] ОШИБКА: команда упала (строка $LINE
 cleanup() {
   pkill -f "$BIN/zpt" 2>/dev/null || true
   sleep 0.5
-  for ns in zhostA zhostB znatA znatB zwan; do
+  for ns in zhostA zhostB znatA znatB zwan zlanB; do
     ip netns del "$ns" 2>/dev/null || true
   done
 }
@@ -117,15 +117,16 @@ start_controller() {
   log "контроллер не запустился"; cat "$WORK/controller.log"; return 1
 }
 
-# start_node HOST_NS NAME INVITE
+# start_node HOST_NS NAME INVITE [ADVERTISE_ROUTE]
 start_node() {
-  local ns=$1 name=$2 inv=$3
+  local ns=$1 name=$2 inv=$3 route=${4:-}
   cat >"$WORK/$name.yaml" <<EOF
 key_file: $WORK/$name/node.key
 listen_port: 4790
 portmap: false
 log_level: debug
 EOF
+  [ -n "$route" ] && echo "advertise_routes: [$route]" >>"$WORK/$name.yaml"
   ip netns exec "$ns" "$BIN/zpt" join -c "$WORK/$name.yaml" -name "$name" "$inv" >"$WORK/$name.join.log" 2>&1
   ip netns exec "$ns" "$BIN/zpt" up -c "$WORK/$name.yaml" >"$WORK/$name.log" 2>&1 &
 }
@@ -263,6 +264,58 @@ dump() {
   done
 }
 
+# subnet_router: B offers its home LAN 192.168.50.0/24 (a "printer" at
+# .10 in namespace zlanB); after the admin approves, A reaches it.
+subnet_router() {
+  CASE=subnet-router
+  log "=== subnet router: A -> LAN за B"
+  setup cone cone
+  ip netns add zlanB
+  ip link add lanB0 type veth peer name printer netns zlanB
+  ip link set lanB0 netns zhostB
+  ip -n zhostB addr add 192.168.50.1/24 dev lanB0
+  ip -n zhostB link set lanB0 up
+  ip -n zlanB addr add 192.168.50.10/24 dev printer
+  ip -n zlanB link set printer up
+  ip -n zlanB link set lo up
+  # The printer knows nothing about rooms: its only route is its LAN.
+  start_controller
+  local room inv
+  room=$("$BIN/zpt-controller" room create -db "$WORK/c.db" -owner admin -name lab -policy auto | awk '/room id/{print $3}')
+  inv=$("$BIN/zpt-controller" invite create -db "$WORK/c.db" -room "$room" -url "$CTRL_URL" -uses 2 -auto)
+  start_node zhostA a "$inv"
+  start_node zhostB b "$inv" 192.168.50.0/24
+  for _ in $(seq 1 60); do [ -n "$(room_ip zhostA)" ] && [ -n "$(room_ip zhostB)" ] && break; sleep 0.5; done
+
+  sleep 3
+  if ip netns exec zhostA ping -c1 -W1 192.168.50.10 >/dev/null 2>&1; then
+    log "ОШИБКА: LAN за B доступна без одобрения"; FAILED=1
+  else
+    log "без одобрения LAN за B недоступна — верно"
+  fi
+  local ok=no
+  for _ in $(seq 1 20); do
+    "$BIN/zpt-controller" routes approve -db "$WORK/c.db" -room "$room" -member b >/dev/null 2>&1 && break
+    sleep 1 # B has not reported its routes yet
+  done
+  for _ in $(seq 1 30); do
+    if ip netns exec zhostA ping -c1 -W1 192.168.50.10 >/dev/null 2>&1; then ok=yes; break; fi
+  done
+  log "после одобрения A -> 192.168.50.10: $ok"
+  [ "$ok" = yes ] || { log "ОШИБКА: subnet router не работает"; FAILED=1; dump; return; }
+  "$BIN/zpt-controller" routes revoke -db "$WORK/c.db" -room "$room" -member b >/dev/null
+  local gone=no
+  for _ in $(seq 1 10); do
+    sleep 1
+    ip netns exec zhostA ping -c1 -W1 192.168.50.10 >/dev/null 2>&1 || { gone=yes; break; }
+  done
+  if [ "$gone" = yes ]; then
+    log "после отзыва LAN за B снова недоступна — верно"
+  else
+    log "ОШИБКА: после отзыва LAN за B всё ещё доступна"; FAILED=1; dump
+  fi
+}
+
 trap cleanup EXIT
 run_case cone cone direct
 run_case cone symmetric relay
@@ -273,6 +326,7 @@ if ! grep -q "relay reached through VLESS" "$WORK/a.log"; then
 else
   log "узел A за закрытым UDP дошёл до relay через VLESS + REALITY"
 fi
+subnet_router
 if [ "$FAILED" != 0 ]; then
   log "НЕ ПРОЙДЕНО"; exit 1
 fi

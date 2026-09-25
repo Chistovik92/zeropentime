@@ -43,6 +43,9 @@ type Endpoints struct {
 	Relay string `json:"relay,omitempty"`
 	// Paths counts the node's peers reached directly and through a relay.
 	Paths PathStats `json:"paths,omitzero"`
+	// Routes are networks behind this node it offers to route for rooms
+	// (subnet router); room admins approve them.
+	Routes []netip.Prefix `json:"routes,omitempty"`
 }
 
 // PathStats counts how a node reaches its peers.
