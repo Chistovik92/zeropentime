@@ -21,7 +21,7 @@ import (
 	"github.com/Chistovik92/zeropentime/internal/store"
 )
 
-var version = "0.3.1-dev"
+var version = "0.3.2-dev"
 
 const usage = `zpt-controller — контроллер zeropentime (админ-панель + API для узлов)
 
