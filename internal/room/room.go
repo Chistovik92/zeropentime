@@ -39,6 +39,9 @@ type Room struct {
 	tdev    tun.Device // the OS interface (nil in userspace mode)
 	routes  []netip.Prefix
 	routing []netip.Prefix // networks this node routes for the room
+	exitSrv bool           // this node is an exit for the room
+	exit    bool           // this node's internet traffic goes into the room
+	exitErr string         // last error turning exit on (logged once)
 	log     *slog.Logger
 	psk     string
 
@@ -240,32 +243,62 @@ func (r *Room) SetRoutes(routes []netip.Prefix) {
 }
 
 // SetRouter makes this node route the room's traffic into the given
-// networks (subnet router); nil turns it off.
-func (r *Room) SetRouter(routes []netip.Prefix) {
+// networks (subnet router) and, with exit, into the internet (exit node);
+// nil and false turn it off.
+func (r *Room) SetRouter(routes []netip.Prefix, exit bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if slices.Equal(routes, r.routing) || r.tdev == nil {
-		r.routing = slices.Clone(routes)
+	if slices.Equal(routes, r.routing) && exit == r.exitSrv || r.tdev == nil {
+		r.routing, r.exitSrv = slices.Clone(routes), exit
 		return
 	}
-	if len(routes) == 0 {
+	if len(routes) == 0 && !exit {
 		disableRouter(r.ifname)
-		r.log.Info("subnet router off")
-	} else if err := enableRouter(r.ifname, r.Address, routes); err != nil {
-		r.log.Warn("cannot route for the room", "routes", routes, "err", err)
+		r.log.Info("routing for the room off")
+	} else if err := enableRouter(r.ifname, r.Address, routes, exit); err != nil {
+		r.log.Warn("cannot route for the room", "routes", routes, "exit", exit, "err", err)
 		return
 	} else {
-		r.log.Info("subnet router on", "routes", routes)
+		r.log.Info("routing for the room on", "routes", routes, "exit", exit)
 	}
-	r.routing = slices.Clone(routes)
+	r.routing, r.exitSrv = slices.Clone(routes), exit
+}
+
+// SetExit sends this machine's internet traffic into the room, to the
+// peer that has 0.0.0.0/0 in its AllowedIPs (the exit node). The node's
+// own sockets are marked (package netmark) and keep the usual routes.
+func (r *Room) SetExit(on bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if on == r.exit {
+		return
+	}
+	if r.tdev != nil {
+		if !on {
+			disableExit(r.ifname)
+			r.log.Info("internet traffic no longer goes through the room")
+		} else if err := enableExit(r.ifname); err != nil {
+			if err.Error() != r.exitErr {
+				r.log.Warn("cannot send internet traffic through the room", "err", err)
+			}
+			r.exitErr = err.Error()
+			return
+		} else {
+			r.log.Info("internet traffic goes through the room's exit node")
+		}
+	}
+	r.exit, r.exitErr = on, ""
 }
 
 // Close tears the room down.
 func (r *Room) Close() {
 	r.mu.Lock()
 	r.closed = true
-	if len(r.routing) > 0 && r.tdev != nil {
+	if (len(r.routing) > 0 || r.exitSrv) && r.tdev != nil {
 		disableRouter(r.ifname)
+	}
+	if r.exit && r.tdev != nil {
+		disableExit(r.ifname)
 	}
 	r.mu.Unlock()
 	r.dev.Close()

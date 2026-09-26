@@ -33,6 +33,7 @@ import (
 
 	"github.com/amnezia-vpn/amneziawg-go/conn"
 
+	"github.com/Chistovik92/zeropentime/internal/netmark"
 	"github.com/Chistovik92/zeropentime/internal/obfs"
 	"github.com/Chistovik92/zeropentime/internal/stun"
 )
@@ -70,10 +71,12 @@ type Conn struct {
 
 // Listen opens the shared UDP socket on port (0 = random), dual-stack.
 func Listen(port int, log *slog.Logger) (*Conn, error) {
-	pc, err := net.ListenUDP("udp", &net.UDPAddr{Port: port})
+	lc := net.ListenConfig{Control: netmark.Control}
+	p, err := lc.ListenPacket(context.Background(), "udp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return nil, fmt.Errorf("listen udp :%d: %w", port, err)
 	}
+	pc := p.(*net.UDPConn)
 	c := &Conn{
 		pc:   pc,
 		port: uint16(pc.LocalAddr().(*net.UDPAddr).Port),

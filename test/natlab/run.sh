@@ -117,16 +117,16 @@ start_controller() {
   log "контроллер не запустился"; cat "$WORK/controller.log"; return 1
 }
 
-# start_node HOST_NS NAME INVITE [ADVERTISE_ROUTE]
+# start_node HOST_NS NAME INVITE [EXTRA_CONFIG_LINE]
 start_node() {
-  local ns=$1 name=$2 inv=$3 route=${4:-}
+  local ns=$1 name=$2 inv=$3 extra=${4:-}
   cat >"$WORK/$name.yaml" <<EOF
 key_file: $WORK/$name/node.key
 listen_port: 4790
 portmap: false
 log_level: debug
 EOF
-  [ -n "$route" ] && echo "advertise_routes: [$route]" >>"$WORK/$name.yaml"
+  [ -n "$extra" ] && echo "$extra" >>"$WORK/$name.yaml"
   ip netns exec "$ns" "$BIN/zpt" join -c "$WORK/$name.yaml" -name "$name" "$inv" >"$WORK/$name.join.log" 2>&1
   ip netns exec "$ns" "$BIN/zpt" up -c "$WORK/$name.yaml" >"$WORK/$name.log" 2>&1 &
 }
@@ -284,7 +284,7 @@ subnet_router() {
   room=$("$BIN/zpt-controller" room create -db "$WORK/c.db" -owner admin -name lab -policy auto | awk '/room id/{print $3}')
   inv=$("$BIN/zpt-controller" invite create -db "$WORK/c.db" -room "$room" -url "$CTRL_URL" -uses 2 -auto)
   start_node zhostA a "$inv"
-  start_node zhostB b "$inv" 192.168.50.0/24
+  start_node zhostB b "$inv" "advertise_routes: [192.168.50.0/24]"
   for _ in $(seq 1 60); do [ -n "$(room_ip zhostA)" ] && [ -n "$(room_ip zhostB)" ] && break; sleep 0.5; done
 
   sleep 3
@@ -316,6 +316,75 @@ subnet_router() {
   fi
 }
 
+# exit_node: B offers to be an exit; after the admin approves and A picks
+# it ("zpt exit"), a web server "on the internet" sees A come from B's
+# public address; A's tunnel and controller connection keep working, B's
+# own LAN stays closed, and "zpt exit off" restores the direct route.
+exit_node() {
+  CASE=exit-node
+  log "=== exit-узел: A выходит в интернет через B"
+  setup cone cone
+  start_controller
+  ip netns exec zwan python3 - "$CTRL_IP" >"$WORK/web.log" 2>&1 <<'PY' &
+import http.server, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        b = self.client_address[0].encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+    def log_message(self, *a):
+        pass
+http.server.HTTPServer((sys.argv[1], 8081), H).serve_forever()
+PY
+  local room inv
+  room=$("$BIN/zpt-controller" room create -db "$WORK/c.db" -owner admin -name lab -policy auto | awk '/room id/{print $3}')
+  inv=$("$BIN/zpt-controller" invite create -db "$WORK/c.db" -room "$room" -url "$CTRL_URL" -uses 2 -auto)
+  start_node zhostA a "$inv"
+  start_node zhostB b "$inv" "advertise_exit: true"
+  local ipB=""
+  for _ in $(seq 1 60); do ipB=$(room_ip zhostB); [ -n "$(room_ip zhostA)" ] && [ -n "$ipB" ] && break; sleep 0.5; done
+  seen_ip() { ip netns exec zhostA curl -fsS -m 3 "http://$CTRL_IP:8081/" 2>/dev/null || echo none; }
+
+  local before after
+  for _ in $(seq 1 20); do before=$(seen_ip); [ "$before" != none ] && break; sleep 0.5; done
+  log "без exit сервер видит A как $before (ожидался 198.51.100.2)"
+  [ "$before" = 198.51.100.2 ] || { log "ОШИБКА: прямой выход в интернет не работает"; FAILED=1; }
+  for _ in $(seq 1 20); do
+    "$BIN/zpt-controller" exit approve -db "$WORK/c.db" -room "$room" -member b >/dev/null 2>&1 && break
+    sleep 1 # B has not offered itself yet
+  done
+  ip netns exec zhostA "$BIN/zpt" exit -c "$WORK/a.yaml" lab b >/dev/null
+  for _ in $(seq 1 30); do after=$(seen_ip); [ "$after" = 198.51.100.3 ] && break; sleep 1; done
+  log "через exit сервер видит A как $after (ожидался 198.51.100.3)"
+  if [ "$after" != 198.51.100.3 ]; then
+    log "ОШИБКА: трафик A не идёт через exit B"; FAILED=1
+    ip -n zhostA rule || true; ip -n zhostA route show table all | grep -v local || true
+    dump; return
+  fi
+  ip netns exec zhostA ping -c2 -W2 "$ipB" >/dev/null || { log "ОШИБКА: комната не работает при включённом exit"; FAILED=1; }
+  if ip netns exec zhostA ping -c1 -W1 10.0.2.1 >/dev/null 2>&1; then
+    log "ОШИБКА: через exit доступна локальная сеть B"; FAILED=1
+  else
+    log "локальная сеть B через exit закрыта — верно"
+  fi
+  # The node still talks to the controller: an admin change arrives.
+  "$BIN/zpt-controller" exit revoke -db "$WORK/c.db" -room "$room" -member b >/dev/null
+  for _ in $(seq 1 20); do after=$(seen_ip); [ "$after" = 198.51.100.2 ] && break; sleep 1; done
+  log "после отзыва exit сервер видит A как $after (ожидался 198.51.100.2)"
+  [ "$after" = 198.51.100.2 ] || { log "ОШИБКА: после отзыва трафик не вернулся на прямой путь"; FAILED=1; dump; return; }
+  "$BIN/zpt-controller" exit approve -db "$WORK/c.db" -room "$room" -member b >/dev/null
+  for _ in $(seq 1 20); do after=$(seen_ip); [ "$after" = 198.51.100.3 ] && break; sleep 1; done
+  ip netns exec zhostA "$BIN/zpt" exit -c "$WORK/a.yaml" off >/dev/null
+  for _ in $(seq 1 20); do after=$(seen_ip); [ "$after" = 198.51.100.2 ] && break; sleep 1; done
+  log "после zpt exit off сервер видит A как $after (ожидался 198.51.100.2)"
+  [ "$after" = 198.51.100.2 ] || { log "ОШИБКА: zpt exit off не вернул прямой путь"; FAILED=1; dump; return; }
+  if ip -n zhostA rule | grep -q 31344; then
+    log "ОШИБКА: правила маршрутизации exit не сняты"; FAILED=1
+  fi
+}
+
 trap cleanup EXIT
 run_case cone cone direct
 run_case cone symmetric relay
@@ -327,6 +396,7 @@ else
   log "узел A за закрытым UDP дошёл до relay через VLESS + REALITY"
 fi
 subnet_router
+exit_node
 if [ "$FAILED" != 0 ]; then
   log "НЕ ПРОЙДЕНО"; exit 1
 fi

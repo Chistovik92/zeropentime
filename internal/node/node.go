@@ -78,6 +78,7 @@ type Node struct {
 	portMap  netip.AddrPort
 	changed  chan struct{} // closed and replaced when our reachability changes
 	disco    *discoMgr
+	exitNote string // last explanation why the chosen exit is not used
 
 	relayMu     sync.Mutex
 	vlessConn   atomic.Pointer[vless.PacketConn]
@@ -231,7 +232,8 @@ func (n *Node) startLocked(key, controller string, rc config.Room) error {
 		return err
 	}
 	r.SetRoutes(rc.Routes)
-	r.SetRouter(rc.Routing)
+	r.SetRouter(rc.Routing, rc.ExitNode)
+	r.SetExit(rc.Exit)
 	n.rooms[key] = &running{room: r, tagKey: prof.TagKey, controller: controller, cfg: rc}
 	return nil
 }
@@ -281,7 +283,11 @@ func (n *Node) supervise(ctx context.Context) {
 		} else {
 			// A "zpt join" may pin a room after its netmap already arrived:
 			// re-apply the last netmaps whenever the pins change.
-			if pins := fmt.Sprint(st.Controllers); pins != prevPins {
+			pins := fmt.Sprint(st.Controllers)
+			if st.Exit != nil {
+				pins += fmt.Sprintf("%+v", *st.Exit)
+			}
+			if pins != prevPins {
 				prevPins = pins
 				n.reapplyAll()
 			}
@@ -420,6 +426,7 @@ func (n *Node) endpoints(url string) api.Endpoints {
 		Relay:     n.relayReadyAddr(),
 		Paths:     n.pathStats(),
 		Routes:    n.opts.Config.AdvertiseRoutes,
+		Exit:      n.opts.Config.AdvertiseExit,
 	}
 }
 
@@ -449,7 +456,7 @@ func (n *Node) apply(url string, nm *api.NetMap) {
 			continue
 		}
 		delete(n.pending, rs.RoomID)
-		rc, err := n.roomFromConfig(url, keyStr, rs, nm, active)
+		rc, err := n.roomFromConfig(url, keyStr, rs, nm, active, st.Exit)
 		if err != nil {
 			n.log.Error("rejecting room config", "room_id", rs.RoomID, "err", err)
 			if cur, ok := n.rooms[rs.RoomID]; ok {
@@ -484,7 +491,8 @@ func (n *Node) apply(url string, nm *api.NetMap) {
 				}
 				cur.room.SetBroadcast(rc.Broadcast)
 				cur.room.SetRoutes(rc.Routes)
-				cur.room.SetRouter(rc.Routing)
+				cur.room.SetRouter(rc.Routing, rc.ExitNode)
+				cur.room.SetExit(rc.Exit)
 				cur.cfg = rc
 				continue
 			}
@@ -503,7 +511,7 @@ func (n *Node) apply(url string, nm *api.NetMap) {
 
 // roomFromConfig verifies a signed room config and turns it into a local
 // room description. It returns nil if this node is not an active member.
-func (n *Node) roomFromConfig(url, keyStr string, rs api.RoomState, nm *api.NetMap, active map[string]bool) (*config.Room, error) {
+func (n *Node) roomFromConfig(url, keyStr string, rs api.RoomState, nm *api.NetMap, active map[string]bool, exit *ExitChoice) (*config.Room, error) {
 	pub, err := pki.ParseRoomKey(keyStr)
 	if err != nil {
 		return nil, err
@@ -522,11 +530,13 @@ func (n *Node) roomFromConfig(url, keyStr string, rs api.RoomState, nm *api.NetM
 
 	me := n.ID.NodeID()
 	rc := &config.Room{Name: cfg.Name, Secret: cfg.Secret, MTU: config.DefaultMTU, Broadcast: cfg.Broadcast}
+	exitID := n.exitPeerLocked(exit, rs, cfg)
 	found := false
 	for _, m := range cfg.Members {
 		if m.NodeID == me {
 			rc.Address = netip.PrefixFrom(m.IP, cfg.Subnet.Bits())
 			rc.Routing = m.Routes
+			rc.ExitNode = m.Exit && n.opts.Config.AdvertiseExit
 			found = true
 			continue
 		}
@@ -540,6 +550,10 @@ func (n *Node) roomFromConfig(url, keyStr string, rs api.RoomState, nm *api.NetM
 			allowed = append(allowed, r)
 			rc.Routes = append(rc.Routes, r)
 		}
+		if m.NodeID == exitID {
+			allowed = append(allowed, netip.PrefixFrom(netip.IPv4Unspecified(), 0))
+			rc.Exit = true
+		}
 		rc.Peers = append(rc.Peers, config.Peer{
 			Name:       m.Name,
 			PublicKey:  m.WGKey,
@@ -552,6 +566,53 @@ func (n *Node) roomFromConfig(url, keyStr string, rs api.RoomState, nm *api.NetM
 		return nil, nil
 	}
 	return rc, nil
+}
+
+// exitPeerLocked picks the member of a room this node sends its internet
+// traffic through ("" = none): the one chosen with "zpt exit", else the one
+// a room admin picked. It must be an approved exit in the signed config,
+// and only one room at a time carries the internet traffic.
+func (n *Node) exitPeerLocked(choice *ExitChoice, rs api.RoomState, cfg *pki.RoomConfig) string {
+	var byName, byID string
+	switch {
+	case choice != nil && choice.Off:
+		return ""
+	case choice != nil:
+		if choice.Room != rs.RoomID && choice.Room != cfg.Name {
+			return ""
+		}
+		byName = choice.Member
+	case rs.UseExit != "":
+		byID = rs.UseExit
+	default:
+		return ""
+	}
+	note, id := "", ""
+	for _, m := range cfg.Members {
+		if m.Name == byName || m.NodeID == byID {
+			switch {
+			case m.NodeID == n.ID.NodeID():
+				note = "this node itself"
+			case !m.Exit:
+				note = m.Name + " is not an approved exit node of the room"
+			default:
+				id = m.NodeID
+			}
+		}
+	}
+	if id == "" && note == "" {
+		note = "no member " + byName + byID + " in the room"
+	}
+	for key, o := range n.rooms {
+		if id != "" && key != rs.RoomID && o.cfg.Exit {
+			note, id = "room "+o.cfg.Name+" already carries the internet traffic", ""
+		}
+	}
+	if note != "" && note != n.exitNote {
+		n.log.Warn("not using the chosen exit node", "room", cfg.Name, "reason", note)
+	}
+	n.exitNote = note
+	return id
 }
 
 // routeConflictLocked explains why a member's network must not be routed

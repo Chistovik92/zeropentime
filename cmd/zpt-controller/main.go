@@ -33,6 +33,8 @@ const usage = `zpt-controller — контроллер zeropentime (админ-�
   zpt-controller room list     -db ФАЙЛ
   zpt-controller invite create -db ФАЙЛ -room ID -url https://... [-uses 1] [-hours 24] [-auto] [-note ТЕКСТ]
   zpt-controller routes approve|revoke -db ФАЙЛ -room ID -member ИМЯ
+  zpt-controller exit approve|revoke   -db ФАЙЛ -room ID -member ИМЯ
+  zpt-controller exit use -db ФАЙЛ -room ID -member ИМЯ [-via ИМЯ_EXIT]  (без -via — напрямую)
   zpt-controller passwd  -db ФАЙЛ -login ЛОГИН
   zpt-controller version
 `
@@ -119,7 +121,7 @@ func run(sub string, args []string) error {
 		}
 		fmt.Printf("новый пароль для %s: %s\n", *login, pw)
 		return nil
-	case "room", "invite", "routes":
+	case "room", "invite", "routes", "exit":
 		return runAdmin(sub, args)
 	case "version":
 		fmt.Println("zpt-controller", version)
@@ -202,9 +204,10 @@ func runAdmin(sub string, args []string) error {
 		fmt.Println(inv.String())
 		return nil
 	}
-	if sub == "routes" && (action == "approve" || action == "revoke") {
+	if (sub == "routes" || sub == "exit") && (action == "approve" || action == "revoke" || action == "use" && sub == "exit") {
 		room := fl.String("room", "", "ID комнаты")
 		name := fl.String("member", "", "имя участника")
+		via := fl.String("via", "", "имя exit-узла (exit use)")
 		fl.Parse(args)
 		svc, closeDB, err := openService(*db, slog.New(slog.DiscardHandler))
 		if err != nil {
@@ -216,12 +219,28 @@ func runAdmin(sub string, args []string) error {
 		if err != nil {
 			return err
 		}
-		act := controller.ActRoutes
-		if action == "revoke" {
-			act = controller.ActNoRoutes
+		act := map[string]controller.MemberAction{"routesapprove": controller.ActRoutes, "routesrevoke": controller.ActNoRoutes,
+			"exitapprove": controller.ActExit, "exitrevoke": controller.ActNoExit}[sub+action]
+		viaID := ""
+		if *via != "" {
+			for _, m := range v.Members {
+				if m.Name == *via {
+					viaID = m.NodeID
+				}
+			}
+			if viaID == "" {
+				return fmt.Errorf("в комнате нет участника %q", *via)
+			}
 		}
 		for _, m := range v.Members {
 			if m.Name == *name {
+				if action == "use" {
+					if err := svc.SetMemberExit(ctx, admin, *room, m.NodeID, viaID); err != nil {
+						return err
+					}
+					fmt.Println("готово")
+					return nil
+				}
 				if err := svc.MemberAction(ctx, admin, *room, m.NodeID, act); err != nil {
 					return err
 				}

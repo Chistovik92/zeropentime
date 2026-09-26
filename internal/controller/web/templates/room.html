@@ -18,7 +18,7 @@
   <h2>Участники</h2>
   {{if .Members}}
   <table>
-    <thead><tr><th></th><th>Имя</th><th>IP</th><th>Теги</th><th>Статус</th><th>Внешний адрес</th><th>NAT</th><th>Связь с пирами</th><th>Сети за узлом</th><th>Был в сети</th><th>Действия</th></tr></thead>
+    <thead><tr><th></th><th>Имя</th><th>IP</th><th>Теги</th><th>Статус</th><th>Внешний адрес</th><th>NAT</th><th>Связь с пирами</th><th>Сети за узлом</th><th>Выход в интернет</th><th>Был в сети</th><th>Действия</th></tr></thead>
     <tbody>
     {{range .Members}}
       <tr>
@@ -37,12 +37,27 @@
         <td class="small">{{nat .NAT}}</td>
         <td class="small">{{with index $.Data.Paths .NodeID}}{{if or .Direct .Relay}}напрямую: {{.Direct}}{{if .Relay}}, через relay: {{.Relay}}{{end}}{{end}}{{end}}</td>
         <td class="small mono">{{if .Routes}}разрешено: {{prefixes .Routes}}{{end}}{{if .Offered}}{{if .Routes}}<br>{{end}}предлагает: {{prefixes .Offered}}{{end}}</td>
+        <td class="small">
+          {{if and .Exit .ExitOffered}}<div>exit-узел комнаты</div>{{else if .ExitOffered}}<div>предлагает себя как exit</div>{{end}}
+          {{if eq .Status "active"}}{{$me := .}}
+          <form method="post" action="/rooms/{{$room.ID}}/members/{{.NodeID}}/use-exit" class="row">
+            <input type="hidden" name="csrf" value="{{$csrf}}">
+            <select name="exit" aria-label="выход в интернет через">
+              <option value="">напрямую</option>
+              {{range $.Data.Members}}{{if and .Exit .ExitOffered (eq .Status "active") (ne .NodeID $me.NodeID)}}<option value="{{.NodeID}}"{{if eq .NodeID $me.UseExit}} selected{{end}}>через {{.Name}}</option>{{end}}{{end}}
+            </select>
+            <button class="small">OK</button>
+          </form>
+          {{end}}
+        </td>
         <td class="small">{{since .LastSeen}}</td>
         <td class="actions">
           {{if eq .Status "pending"}}{{template "act" (actArgs $room.ID .NodeID "approve" "Одобрить" $csrf "")}}{{end}}
           {{if eq .Status "banned"}}{{template "act" (actArgs $room.ID .NodeID "unban" "Разблокировать" $csrf "")}}{{else}}{{template "act" (actArgs $room.ID .NodeID "ban" "Заблокировать" $csrf "Заблокировать участника? Он не сможет вернуться по приглашению.")}}{{end}}
           {{if .Offered}}{{template "act" (actArgs $room.ID .NodeID "routes" "Разрешить сети" $csrf "Разрешить остальным участникам ходить в сети за этим узлом?")}}{{end}}
           {{if .Routes}}{{template "act" (actArgs $room.ID .NodeID "noroutes" "Отозвать сети" $csrf "")}}{{end}}
+          {{if and .ExitOffered (not .Exit)}}{{template "act" (actArgs $room.ID .NodeID "exit" "Разрешить exit" $csrf "Разрешить участникам выходить в интернет через этот узел? Их трафик будет виден в сети этого узла под его IP.")}}{{end}}
+          {{if .Exit}}{{template "act" (actArgs $room.ID .NodeID "noexit" "Отозвать exit" $csrf "")}}{{end}}
           {{template "act" (actArgs $room.ID .NodeID "kick" "Исключить" $csrf "Исключить участника из комнаты?")}}
         </td>
       </tr>

@@ -16,8 +16,16 @@ import (
 
 	"github.com/Chistovik92/zeropentime/internal/api"
 	"github.com/Chistovik92/zeropentime/internal/identity"
+	"github.com/Chistovik92/zeropentime/internal/netmark"
 	"github.com/Chistovik92/zeropentime/internal/pki"
 )
+
+// transport keeps the controller connection out of an exit node's tunnel.
+var transport = func() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DialContext = netmark.Dialer().DialContext
+	return t
+}()
 
 // Error is a non-2xx answer from the controller.
 type Error struct {
@@ -47,7 +55,7 @@ func New(base string, id *identity.Identity, version string) *Client {
 		Base:    strings.TrimRight(base, "/"),
 		ID:      id,
 		Version: version,
-		HTTP:    &http.Client{Timeout: (api.PollTimeout + 20) * time.Second},
+		HTTP:    &http.Client{Timeout: (api.PollTimeout + 20) * time.Second, Transport: transport},
 	}
 }
 

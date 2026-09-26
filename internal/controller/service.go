@@ -306,6 +306,40 @@ func (s *Service) RevokeInvite(ctx context.Context, u *store.User, roomID string
 	})
 }
 
+// SetMemberExit picks the exit node a member sends its internet traffic
+// through ("" = none). The exit must be an approved exit of the same room;
+// a choice made on the member's own machine (zpt exit) wins over this one.
+func (s *Service) SetMemberExit(ctx context.Context, u *store.User, roomID, nodeID, exitID string) error {
+	return s.change(ctx, func(tx *store.Tx) error {
+		if _, err := s.roomFor(tx, u, roomID); err != nil {
+			return err
+		}
+		m, err := tx.Member(roomID, nodeID)
+		if err != nil {
+			return err
+		}
+		name := "нет"
+		if exitID != "" {
+			x, err := tx.Member(roomID, exitID)
+			if err != nil {
+				return invalid("exit-узел не найден в комнате")
+			}
+			if exitID == nodeID || !x.Exit || !x.ExitOffered || x.Status != store.StatusActive {
+				return invalid("%s не одобрен как exit-узел этой комнаты", x.Name)
+			}
+			name = x.Name
+		}
+		m.UseExit = exitID
+		if err := tx.UpdateMember(m); err != nil {
+			return err
+		}
+		if err := tx.BumpRoom(roomID); err != nil {
+			return err
+		}
+		return tx.Audit(u.Login, "member.use_exit", roomID, nodeID+" "+m.Name+" -> "+name)
+	})
+}
+
 // ---- members (admin actions) ----
 
 // MemberAction is an admin operation on a member.
@@ -320,6 +354,10 @@ const (
 	// ActNoRoutes withdraws the approval.
 	ActRoutes   MemberAction = "routes"
 	ActNoRoutes MemberAction = "noroutes"
+	// ActExit lets members send their internet traffic through the member
+	// (it must offer to be an exit); ActNoExit withdraws that.
+	ActExit   MemberAction = "exit"
+	ActNoExit MemberAction = "noexit"
 )
 
 func (s *Service) MemberAction(ctx context.Context, u *store.User, roomID, nodeID string, act MemberAction) error {
@@ -357,6 +395,15 @@ func (s *Service) MemberAction(ctx context.Context, u *store.User, roomID, nodeI
 			err = tx.UpdateMember(m)
 		case ActNoRoutes:
 			m.Routes = nil
+			err = tx.UpdateMember(m)
+		case ActExit:
+			if !m.ExitOffered {
+				return invalid("участник не предлагает себя как exit-узел (advertise_exit в его конфиге)")
+			}
+			m.Exit = true
+			err = tx.UpdateMember(m)
+		case ActNoExit:
+			m.Exit = false
 			err = tx.UpdateMember(m)
 		default:
 			return invalid("неизвестное действие %q", act)
@@ -475,6 +522,7 @@ func reach(e api.Endpoints, remote netip.Addr, version string) store.Reach {
 	if knownNAT[e.NAT] {
 		r.NAT = e.NAT
 	}
+	r.Exit = e.Exit
 	if e.PortMap.IsValid() {
 		r.PortMap = e.PortMap
 	}
@@ -663,7 +711,11 @@ func (s *Service) netMap(ctx context.Context, nodeID string) (*api.NetMap, error
 							routes = append(routes, p)
 						}
 					}
-					cfg.Members = append(cfg.Members, pki.Member{NodeID: o.NodeID, Name: o.Name, WGKey: k, IP: o.IP, Tags: o.Tags, Routes: routes})
+					exit := o.Exit && o.ExitOffered
+					cfg.Members = append(cfg.Members, pki.Member{NodeID: o.NodeID, Name: o.Name, WGKey: k, IP: o.IP, Tags: o.Tags, Routes: routes, Exit: exit})
+					if exit && o.NodeID == m.UseExit && o.NodeID != nodeID {
+						st.UseExit = o.NodeID
+					}
 					if o.NodeID != nodeID {
 						if _, ok := nm.Peers[o.NodeID]; !ok {
 							n, err := tx.NodeByID(o.NodeID)

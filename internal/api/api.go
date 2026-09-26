@@ -46,6 +46,9 @@ type Endpoints struct {
 	// Routes are networks behind this node it offers to route for rooms
 	// (subnet router); room admins approve them.
 	Routes []netip.Prefix `json:"routes,omitempty"`
+	// Exit offers this node as an exit to the internet for its rooms;
+	// room admins approve it.
+	Exit bool `json:"exit,omitempty"`
 }
 
 // PathStats counts how a node reaches its peers.
@@ -113,6 +116,10 @@ type RoomState struct {
 	RoomID string      `json:"room_id"`
 	Status string      `json:"status"`           // pending | active | banned
 	Config *pki.Signed `json:"config,omitempty"` // only when active
+	// UseExit is the node ID of the exit a room admin picked for this
+	// node. The node uses it only if that member is an approved exit in
+	// the signed config, and a choice made on the node itself wins.
+	UseExit string `json:"use_exit,omitempty"`
 }
 
 // Peer is advisory reachability info (not signed: AmneziaWG authenticates

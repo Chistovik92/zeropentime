@@ -65,6 +65,11 @@ var migrations = []string{
 	// 6 (0.3.0): subnet routers — offered by nodes, approved per member.
 	`ALTER TABLE nodes ADD COLUMN routes TEXT NOT NULL DEFAULT 'null';
 	 ALTER TABLE members ADD COLUMN routes TEXT NOT NULL DEFAULT 'null';`,
+	// 7 (0.3.1): exit nodes — offered by nodes, approved per member; the
+	// exit a room admin picked for a member.
+	`ALTER TABLE nodes ADD COLUMN exit_offer INTEGER NOT NULL DEFAULT 0;
+	 ALTER TABLE members ADD COLUMN exit INTEGER NOT NULL DEFAULT 0;
+	 ALTER TABLE members ADD COLUMN use_exit TEXT NOT NULL DEFAULT '';`,
 }
 
 // SchemaVersion is the version a fully migrated database has.
@@ -272,6 +277,7 @@ type Node struct {
 	DiscoKey  []byte
 	Relay     string
 	Routes    []netip.Prefix // offered by the node
+	Exit      bool           // offers to be an exit node
 }
 
 // Reach is what a node reports about how it can be reached.
@@ -285,6 +291,7 @@ type Reach struct {
 	DiscoKey  []byte
 	Relay     string
 	Routes    []netip.Prefix
+	Exit      bool
 	Version   string
 }
 
@@ -305,22 +312,23 @@ func (t *Tx) UpdateNodeEndpoints(id string, r Reach) (bool, error) {
 	}
 	changed := n.PublicIP != r.PublicIP || n.UDPPort != r.UDPPort || jsonString(n.Locals) != jsonString(r.Locals) ||
 		jsonString(n.Reflexive) != jsonString(r.Reflexive) || n.NAT != r.NAT || n.PortMap != r.PortMap ||
-		string(n.DiscoKey) != string(r.DiscoKey) || n.Relay != r.Relay || jsonString(n.Routes) != jsonString(r.Routes)
+		string(n.DiscoKey) != string(r.DiscoKey) || n.Relay != r.Relay || jsonString(n.Routes) != jsonString(r.Routes) ||
+		n.Exit != r.Exit
 	_, err = t.tx.Exec(`UPDATE nodes SET public_ip = ?, udp_port = ?, locals = ?, client_version = ?, last_seen = ?,
-		nat_type = ?, reflexive = ?, portmap = ?, disco_key = ?, relay = ?, routes = ? WHERE id = ?`,
+		nat_type = ?, reflexive = ?, portmap = ?, disco_key = ?, relay = ?, routes = ?, exit_offer = ? WHERE id = ?`,
 		addrString(r.PublicIP), r.UDPPort, jsonString(r.Locals), r.Version, now(),
-		r.NAT, jsonString(r.Reflexive), addrPortString(r.PortMap), r.DiscoKey, r.Relay, jsonString(r.Routes), id)
+		r.NAT, jsonString(r.Reflexive), addrPortString(r.PortMap), r.DiscoKey, r.Relay, jsonString(r.Routes), r.Exit, id)
 	return changed, err
 }
 
-const nodeCols = `id, ed_key, box_key, name, public_ip, udp_port, locals, client_version, last_seen, created_at, nat_type, reflexive, portmap, disco_key, relay, routes`
+const nodeCols = `id, ed_key, box_key, name, public_ip, udp_port, locals, client_version, last_seen, created_at, nat_type, reflexive, portmap, disco_key, relay, routes, exit_offer`
 
 func scanNode(row interface{ Scan(...any) error }) (*Node, error) {
 	var n Node
 	var pub, locals, reflexive, portmap, routes string
 	var seen, created int64
 	if err := row.Scan(&n.ID, &n.EdKey, &n.BoxKey, &n.Name, &pub, &n.UDPPort, &locals, &n.Version, &seen, &created,
-		&n.NAT, &reflexive, &portmap, &n.DiscoKey, &n.Relay, &routes); err != nil {
+		&n.NAT, &reflexive, &portmap, &n.DiscoKey, &n.Relay, &routes, &n.Exit); err != nil {
 		return nil, notFound(err)
 	}
 	n.PublicIP, _ = netip.ParseAddr(pub)
@@ -485,6 +493,12 @@ type Member struct {
 	// Routes approved by a room admin; Offered are the node's current offer.
 	Routes  []netip.Prefix
 	Offered []netip.Prefix
+	// Exit is approved by a room admin; ExitOffered is the node's offer.
+	Exit        bool
+	ExitOffered bool
+	// UseExit is the node ID of the exit a room admin picked for this
+	// member ("" = none; the member may pick one itself).
+	UseExit string
 }
 
 func (t *Tx) AddMember(m *Member) error {
@@ -494,14 +508,14 @@ func (t *Tx) AddMember(m *Member) error {
 }
 
 const memberCols = `m.room_id, m.node_id, m.name, m.wg_key, m.ip, m.tags, m.status, m.created_at, n.last_seen, n.public_ip, n.client_version,
-	n.nat_type, n.reflexive, n.portmap, m.routes, n.routes`
+	n.nat_type, n.reflexive, n.portmap, m.routes, n.routes, m.exit, n.exit_offer, m.use_exit`
 
 func scanMember(row interface{ Scan(...any) error }) (*Member, error) {
 	var m Member
 	var ip, tags, pub, reflexive, portmap, routes, offered string
 	var created, seen int64
 	if err := row.Scan(&m.RoomID, &m.NodeID, &m.Name, &m.WGKey, &ip, &tags, &m.Status, &created, &seen, &pub, &m.Version,
-		&m.NAT, &reflexive, &portmap, &routes, &offered); err != nil {
+		&m.NAT, &reflexive, &portmap, &routes, &offered, &m.Exit, &m.ExitOffered, &m.UseExit); err != nil {
 		return nil, notFound(err)
 	}
 	m.IP, _ = netip.ParseAddr(ip)
@@ -547,8 +561,9 @@ func (t *Tx) Memberships(nodeID string) ([]Member, error) {
 }
 
 func (t *Tx) UpdateMember(m *Member) error {
-	_, err := t.tx.Exec(`UPDATE members SET name = ?, ip = ?, tags = ?, status = ?, routes = ? WHERE room_id = ? AND node_id = ?`,
-		m.Name, addrString(m.IP), jsonString(m.Tags), m.Status, jsonString(m.Routes), m.RoomID, m.NodeID)
+	_, err := t.tx.Exec(`UPDATE members SET name = ?, ip = ?, tags = ?, status = ?, routes = ?, exit = ?, use_exit = ?
+		WHERE room_id = ? AND node_id = ?`,
+		m.Name, addrString(m.IP), jsonString(m.Tags), m.Status, jsonString(m.Routes), m.Exit, m.UseExit, m.RoomID, m.NodeID)
 	return err
 }
 

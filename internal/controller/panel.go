@@ -240,6 +240,7 @@ func (h *Server) routesPanel(mux *http.ServeMux) {
 	mux.Handle("POST /rooms/{id}/invites", h.auth(h.inviteCreate))
 	mux.Handle("POST /rooms/{id}/invites/{inv}/revoke", h.auth(h.inviteRevoke))
 	mux.Handle("POST /rooms/{id}/members/{node}/update", h.auth(h.memberUpdate))
+	mux.Handle("POST /rooms/{id}/members/{node}/use-exit", h.auth(h.memberUseExit))
 	mux.Handle("POST /rooms/{id}/members/{node}/{action}", h.auth(h.memberAction))
 	mux.Handle("GET /users", h.auth(h.usersPage))
 	mux.Handle("POST /users", h.auth(h.userCreate))
@@ -381,8 +382,14 @@ func (h *Server) memberAction(w http.ResponseWriter, r *http.Request, u *store.U
 	act := MemberAction(r.PathValue("action"))
 	err := h.svc.MemberAction(r.Context(), u, id, r.PathValue("node"), act)
 	msg := map[MemberAction]string{ActApprove: "Участник одобрен", ActBan: "Участник заблокирован", ActUnban: "Блокировка снята", ActKick: "Участник исключён",
-		ActRoutes: "Маршруты разрешены", ActNoRoutes: "Маршруты отозваны"}[act]
+		ActRoutes: "Маршруты разрешены", ActNoRoutes: "Маршруты отозваны", ActExit: "Exit-узел разрешён", ActNoExit: "Exit-узел отозван"}[act]
 	back(w, r, "/rooms/"+id, err, msg)
+}
+
+func (h *Server) memberUseExit(w http.ResponseWriter, r *http.Request, u *store.User, _ string) {
+	id := r.PathValue("id")
+	err := h.svc.SetMemberExit(r.Context(), u, id, r.PathValue("node"), r.PostFormValue("exit"))
+	back(w, r, "/rooms/"+id, err, "Выход в интернет обновлён")
 }
 
 func (h *Server) memberUpdate(w http.ResponseWriter, r *http.Request, u *store.User, _ string) {

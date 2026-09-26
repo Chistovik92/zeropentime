@@ -17,6 +17,17 @@ import (
 // follow and the pinned signing key of every room joined through them.
 type State struct {
 	Controllers []ControllerState `json:"controllers"`
+	// Exit is the exit node chosen on this machine ("zpt exit"); nil
+	// follows the choice of the room admins.
+	Exit *ExitChoice `json:"exit,omitempty"`
+}
+
+// ExitChoice is an exit node picked with "zpt exit".
+type ExitChoice struct {
+	// Off: no exit, whatever room admins pick.
+	Off    bool   `json:"off,omitempty"`
+	Room   string `json:"room,omitempty"`   // room ID or name
+	Member string `json:"member,omitempty"` // member name in the room
 }
 
 // ControllerState is one controller the node follows.

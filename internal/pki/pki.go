@@ -52,6 +52,9 @@ type Member struct {
 	// Routes are networks behind this member the room may reach through
 	// it (approved by a room admin).
 	Routes []netip.Prefix `json:"routes,omitempty"`
+	// Exit: a room admin allows members to send their internet traffic
+	// through this member.
+	Exit bool `json:"exit,omitempty"`
 }
 
 // RoomConfig is the signed description of a room.
@@ -118,7 +121,7 @@ func VerifyRoomConfig(pub ed25519.PublicKey, s *Signed) (*RoomConfig, error) {
 }
 
 // ValidRoute reports whether a network may be routed through a member:
-// a masked IPv4 network, not the default route (exit nodes come later)
+// a masked IPv4 network, not the default route (that is Member.Exit)
 // and not a loopback, link-local or multicast range.
 func ValidRoute(p netip.Prefix) bool {
 	a := p.Addr()

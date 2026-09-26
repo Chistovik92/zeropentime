@@ -687,3 +687,74 @@ func TestSubnetRouteApproval(t *testing.T) {
 	e.act(room.ID, b, controller.ActNoRoutes)
 	eventually(t, 10*time.Second, "not routed after revoke", peerHas(false))
 }
+
+// 0.3.1: a member offers to be an exit node; after a room admin approves
+// it, a member sends its internet traffic there when the admin picks that
+// exit for it in the panel or the member picks it itself ("zpt exit"),
+// and the member's own choice wins.
+func TestExitNode(t *testing.T) {
+	e := newEnv(t)
+	room := e.room("game", "auto")
+	none := func(uint16, []netip.Prefix) []netip.AddrPort { return nil }
+	a := e.node("a")
+	b := e.nodeCfg("b", none, false, false, func(c *config.Config) { c.AdvertiseExit = true })
+	e.mustJoin(a, e.invite(room.ID, 0, false), "alice", "active")
+	e.mustJoin(b, e.invite(room.ID, 0, false), "bob", "active")
+	ctx := context.Background()
+
+	exitVia := func(want bool) func() error {
+		return func() error {
+			r, err := a.node.Room("game")
+			if err != nil {
+				return err
+			}
+			stats, _ := r.Stats()
+			if got := strings.Contains(stats, "allowed_ip=0.0.0.0/0"); got != want {
+				return fmt.Errorf("default route to bob=%v, want %v", got, want)
+			}
+			return nil
+		}
+	}
+	setChoice := func(c *node.ExitChoice) {
+		st, err := node.LoadState(a.state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		st.Exit = c
+		if err := st.Save(a.state); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	eventually(t, 15*time.Second, "b offers to be an exit", func() error {
+		v, _ := e.svc.Room(ctx, e.admin, room.ID)
+		for _, m := range v.Members {
+			if m.Name == "bob" && m.ExitOffered {
+				return nil
+			}
+		}
+		return errors.New("not offered yet")
+	})
+	if err := e.svc.SetMemberExit(ctx, e.admin, room.ID, a.id.NodeID(), b.id.NodeID()); err == nil {
+		t.Fatal("picked an exit that is not approved")
+	}
+	if err := e.svc.MemberAction(ctx, e.admin, room.ID, a.id.NodeID(), controller.ActExit); err == nil {
+		t.Fatal("approved an exit that does not offer itself")
+	}
+	e.act(room.ID, b, controller.ActExit)
+	if !strings.Contains(e.panelPage("/rooms/"+room.ID), "через bob") {
+		t.Fatal("panel does not offer bob as an exit")
+	}
+	eventually(t, 5*time.Second, "approved but not chosen", exitVia(false))
+
+	if err := e.svc.SetMemberExit(ctx, e.admin, room.ID, a.id.NodeID(), b.id.NodeID()); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 10*time.Second, "exit picked in the panel", exitVia(true))
+	setChoice(&node.ExitChoice{Off: true})
+	eventually(t, 10*time.Second, "zpt exit off wins over the panel", exitVia(false))
+	setChoice(&node.ExitChoice{Room: "game", Member: "bob"})
+	eventually(t, 10*time.Second, "zpt exit game bob", exitVia(true))
+	e.act(room.ID, b, controller.ActNoExit)
+	eventually(t, 10*time.Second, "exit revoked", exitVia(false))
+}

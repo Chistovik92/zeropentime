@@ -54,7 +54,10 @@ type Config struct {
 	// AdvertiseRoutes offers networks behind this node to the rooms it is
 	// in (subnet router, Linux only for now); room admins approve them.
 	AdvertiseRoutes []netip.Prefix `yaml:"advertise_routes"`
-	Rooms           []Room         `yaml:"rooms"`
+	// AdvertiseExit offers this node as an exit to the internet for the
+	// rooms it is in (Linux only for now); room admins approve it.
+	AdvertiseExit bool   `yaml:"advertise_exit"`
+	Rooms         []Room `yaml:"rooms"`
 }
 
 // Room is one virtual LAN this node is a member of.
@@ -77,6 +80,11 @@ type Room struct {
 	// are this node's networks it routes for the room (subnet router).
 	Routes  []netip.Prefix `yaml:"-"`
 	Routing []netip.Prefix `yaml:"-"`
+	// Exit: this node's internet traffic goes into the room (the exit peer
+	// has 0.0.0.0/0 in its AllowedIPs). ExitNode: this node is an exit for
+	// the room's members.
+	Exit     bool `yaml:"-"`
+	ExitNode bool `yaml:"-"`
 }
 
 // Obfuscation overrides AmneziaWG parameters that may differ between members

@@ -28,6 +28,8 @@ import (
 
 	utls "github.com/refraction-networking/utls"
 	"golang.org/x/crypto/hkdf"
+
+	"github.com/Chistovik92/zeropentime/internal/netmark"
 )
 
 // ClientConfig describes a VLESS + REALITY server.
@@ -49,8 +51,7 @@ var errNotReality = errors.New("vless: server is not our REALITY server (real ce
 // Dial connects, performs the REALITY handshake, opens a VLESS UDP session
 // to dest and returns the packet stream.
 func Dial(ctx context.Context, c ClientConfig, dest netip.AddrPort) (*PacketConn, error) {
-	var d net.Dialer
-	raw, err := d.DialContext(ctx, "tcp", c.Addr)
+	raw, err := netmark.Dialer().DialContext(ctx, "tcp", c.Addr)
 	if err != nil {
 		return nil, err
 	}

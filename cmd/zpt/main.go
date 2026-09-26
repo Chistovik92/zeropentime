@@ -20,6 +20,7 @@ import (
 	"github.com/Chistovik92/zeropentime/internal/client"
 	"github.com/Chistovik92/zeropentime/internal/config"
 	"github.com/Chistovik92/zeropentime/internal/identity"
+	"github.com/Chistovik92/zeropentime/internal/netmark"
 	"github.com/Chistovik92/zeropentime/internal/node"
 	"github.com/Chistovik92/zeropentime/internal/obfs"
 )
@@ -32,6 +33,9 @@ const usage = `zpt — zeropentime: децентрализованные вир�
   zpt keygen  [-key ФАЙЛ]                  создать ключ узла (если его ещё нет)
   zpt join    [-c КОНФИГ] [-name ИМЯ] ССЫЛКА  вступить в комнату по приглашению
   zpt leave   [-c КОНФИГ] ID_КОМНАТЫ        выйти из комнаты
+  zpt exit    [-c КОНФИГ] КОМНАТА УЧАСТНИК  выходить в интернет через участника комнаты (exit-узел)
+  zpt exit    [-c КОНФИГ] off|auto          не использовать exit | как назначил админ комнаты
+  zpt exit    [-c КОНФИГ]                   показать выбор
   zpt up      [-c КОНФИГ]                   запустить узел
   zpt pubkey  -c КОНФИГ                     публичные ключи узла в статических комнатах
   zpt room new                              секрет статической комнаты (без контроллера)
@@ -58,6 +62,8 @@ func main() {
 		err = cmdJoin(args)
 	case "leave":
 		err = cmdLeave(args)
+	case "exit":
+		err = cmdExit(args)
 	case "up":
 		err = cmdUp(args)
 	case "controller":
@@ -263,6 +269,46 @@ func cmdLeave(args []string) error {
 	return nil
 }
 
+func cmdExit(args []string) error {
+	fl := flag.NewFlagSet("exit", flag.ExitOnError)
+	cfgPath, explicit := configFlag(fl)
+	fl.Parse(args)
+	cfg, err := nodeConfig(*cfgPath, explicit())
+	if err != nil {
+		return err
+	}
+	statePath := node.StatePath(cfg.KeyPath())
+	st, err := node.LoadState(statePath)
+	if err != nil {
+		return err
+	}
+	switch {
+	case fl.NArg() == 0:
+		switch x := st.Exit; {
+		case x == nil:
+			fmt.Println("exit-узел: как назначил админ комнаты (если назначил)")
+		case x.Off:
+			fmt.Println("exit-узел: не используется")
+		default:
+			fmt.Printf("exit-узел: %s в комнате %s\n", x.Member, x.Room)
+		}
+		return nil
+	case fl.NArg() == 1 && fl.Arg(0) == "off":
+		st.Exit = &node.ExitChoice{Off: true}
+	case fl.NArg() == 1 && fl.Arg(0) == "auto":
+		st.Exit = nil
+	case fl.NArg() == 2:
+		st.Exit = &node.ExitChoice{Room: fl.Arg(0), Member: fl.Arg(1)}
+	default:
+		return errors.New("использование: zpt exit [КОМНАТА УЧАСТНИК | off | auto]")
+	}
+	if err := st.Save(statePath); err != nil {
+		return err
+	}
+	fmt.Println("сохранено; запущенный узел применит выбор за пару секунд (участник должен быть одобрен как exit-узел)")
+	return nil
+}
+
 func cmdUp(args []string) error {
 	fl := flag.NewFlagSet("up", flag.ExitOnError)
 	cfgPath, explicit := configFlag(fl)
@@ -281,6 +327,7 @@ func cmdUp(args []string) error {
 		if err := requireAdmin(); err != nil {
 			return err
 		}
+		netmark.Install()
 	}
 	log, err := newLogger(cfg.LogLevel)
 	if err != nil {
