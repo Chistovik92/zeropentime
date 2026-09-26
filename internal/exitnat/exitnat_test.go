@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/amnezia-vpn/amneziawg-go/tun/netstack"
+	"github.com/Chistovik92/zeropentime/internal/netstack"
 )
 
 // lab wires a client network stack (a room member) to a NAT whose Dial

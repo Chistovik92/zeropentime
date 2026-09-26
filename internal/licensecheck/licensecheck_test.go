@@ -33,7 +33,7 @@ func repoRoot(t *testing.T) string {
 }
 
 // mitDirs are third-party code kept under its own MIT license.
-var mitDirs = []string{"internal/wgfirewall"}
+var mitDirs = []string{"internal/wgfirewall", "internal/netstack"}
 
 func wantLicense(rel string) string {
 	for _, d := range mitDirs {

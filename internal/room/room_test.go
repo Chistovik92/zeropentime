@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Chistovik92/zeropentime/internal/netstack"
 	"github.com/amnezia-vpn/amneziawg-go/conn"
 	"github.com/amnezia-vpn/amneziawg-go/device"
-	"github.com/amnezia-vpn/amneziawg-go/tun/netstack"
 
 	"github.com/Chistovik92/zeropentime/internal/config"
 	"github.com/Chistovik92/zeropentime/internal/identity"
