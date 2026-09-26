@@ -244,6 +244,7 @@ func (e *env) act(roomID string, tn *testNode, a controller.MemberAction) {
 
 func eventually(t *testing.T, timeout time.Duration, what string, fn func() error) time.Duration {
 	t.Helper()
+	timeout *= raceSlowdown
 	start := time.Now()
 	var err error
 	for time.Since(start) < timeout {

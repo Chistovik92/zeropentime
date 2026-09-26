@@ -51,14 +51,25 @@ type Forwarder struct {
 // Listen starts a server on addr (port 53 in production; 0 picks one).
 // upstreams gives the resolvers for a query from src (none: refused).
 func Listen(addr netip.AddrPort, upstreams func(src netip.Addr) []netip.AddrPort, log *slog.Logger) (*Forwarder, error) {
-	u, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(addr))
-	if err != nil {
-		return nil, err
-	}
-	port := u.LocalAddr().(*net.UDPAddr).AddrPort().Port()
-	t, err := net.ListenTCP("tcp", net.TCPAddrFromAddrPort(netip.AddrPortFrom(addr.Addr(), port)))
-	if err != nil {
+	var u *net.UDPConn
+	var t *net.TCPListener
+	var err error
+	// With port 0 the UDP port is random and TCP may not get the same one
+	// (Windows reserves port ranges): try a few.
+	for range 10 {
+		if u, err = net.ListenUDP("udp", net.UDPAddrFromAddrPort(addr)); err != nil {
+			return nil, err
+		}
+		port := u.LocalAddr().(*net.UDPAddr).AddrPort().Port()
+		if t, err = net.ListenTCP("tcp", net.TCPAddrFromAddrPort(netip.AddrPortFrom(addr.Addr(), port))); err == nil {
+			break
+		}
 		u.Close()
+		if addr.Port() != 0 {
+			return nil, err
+		}
+	}
+	if err != nil {
 		return nil, err
 	}
 	f := &Forwarder{upstreams: upstreams, log: log, udp: u, tcp: t, sem: make(chan struct{}, maxInflight)}
