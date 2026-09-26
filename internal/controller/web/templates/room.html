@@ -136,6 +136,7 @@
     <label title="Свой DNS-сервер для всех имён у участников: адрес участника комнаты, устройства в разрешённой сети за узлом (например, Pi-hole дома) или сервер в интернете. До трёх через запятую; пусто — DNS не меняется">DNS-серверы комнаты
       <input name="dns" value="{{addrs $room.DNS}}" placeholder="например, 10.100.1.5, 9.9.9.9" class="mono">
     </label>
+    <label class="check" title="Когда контроллер недоступен, участники находят друг друга через публичную DHT BitTorrent. Их внешние адреса появятся в DHT под ключом из секрета комнаты — посторонние не свяжут их с комнатой, но увидят, что адрес участвует в какой-то раздаче"><input type="checkbox" name="dht"{{if $room.DHT}} checked{{end}}> Поиск участников через DHT без контроллера</label>
     <div><button>Сохранить</button></div>
   </form>
   <p class="muted small">ID комнаты: <span class="mono">{{$room.ID}}</span><br>Ключ подписи: <span class="mono">{{.RoomKey}}</span></p>

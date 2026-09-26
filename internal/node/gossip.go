@@ -91,18 +91,30 @@ func (n *Node) kickGossipLocked(roomID string) {
 	}
 }
 
-// peerAddrs are the room addresses of the other members.
+// peerAddrs are the room addresses of the other members that already
+// have a session with us. Sending to a member without one would start a
+// handshake from both sides at once when a room comes up, which the
+// keepalive stagger of package room exists to avoid (it costs a failed
+// handshake and seconds without traffic); such members get the next
+// announce.
 func (n *Node) peerAddrs(roomID string) []netip.Addr {
 	n.mu.Lock()
-	defer n.mu.Unlock()
 	r, ok := n.rooms[roomID]
 	if !ok {
+		n.mu.Unlock()
 		return nil
 	}
+	peers, subnet, rm := r.cfg.Peers, r.cfg.Address.Masked(), r.room
+	n.mu.Unlock()
+	stats := parseUAPI(rm.Stats())
 	var out []netip.Addr
-	for _, p := range r.cfg.Peers {
+	for _, p := range peers {
+		st, ok := stats[p.PublicKey]
+		if !ok || st.handshake.IsZero() || time.Since(st.handshake) > 3*time.Minute {
+			continue
+		}
 		for _, a := range p.AllowedIPs {
-			if a.Bits() == 32 && r.cfg.Address.Masked().Contains(a.Addr()) {
+			if a.Bits() == 32 && subnet.Contains(a.Addr()) {
 				out = append(out, a.Addr())
 			}
 		}

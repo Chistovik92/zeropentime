@@ -225,6 +225,7 @@ func runAdmin(sub string, args []string) error {
 	owner := fl.String("owner", "", "логин владельца комнаты")
 	policy := fl.String("policy", "", "вступление: manual (с одобрением) или auto")
 	broadcast := fl.String("broadcast", "", "широковещание: on, off или mdns")
+	dhtFlag := fl.String("dht", "", "поиск участников через DHT без контроллера: on или off")
 	servers := fl.String("servers", "", "DNS-серверы через запятую (пусто — убрать)")
 	ip := fl.String("ip", "", "IP в комнате")
 	tags := fl.String("tags", "\x00", "теги через запятую")
@@ -334,7 +335,16 @@ func runAdmin(sub string, args []string) error {
 		if *broadcast != "" {
 			b = *broadcast
 		}
-		return done(svc.UpdateRoom(a.ctx, cliAdmin, v.Room.ID, n, p, b))
+		if err := svc.UpdateRoom(a.ctx, cliAdmin, v.Room.ID, n, p, b); err != nil {
+			return err
+		}
+		if *dhtFlag != "" {
+			if *dhtFlag != "on" && *dhtFlag != "off" {
+				return errors.New("-dht: on или off")
+			}
+			return done(svc.SetRoomDHT(a.ctx, cliAdmin, v.Room.ID, *dhtFlag == "on"))
+		}
+		return done(nil)
 	case "room dns":
 		v, err := a.room(*roomRef)
 		if err != nil {

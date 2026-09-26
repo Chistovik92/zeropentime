@@ -76,6 +76,9 @@ type RoomConfig struct {
 	DNS []netip.Addr `json:"dns,omitempty"`
 	// ACL are the room's access rules (none: everything allowed).
 	ACL []acl.Rule `json:"acl,omitempty"`
+	// DHT: members look each other up in the public BitTorrent DHT when
+	// the controller is unreachable (a room admin's choice).
+	DHT bool `json:"dht,omitempty"`
 }
 
 // Signed is a payload with an Ed25519 signature over it. The payload is

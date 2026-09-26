@@ -50,6 +50,7 @@ type discoPeer struct {
 	key        identity.Key
 	candidates []netip.AddrPort // from controllers
 	learned    []netip.AddrPort // addresses pings came from
+	hints      []netip.AddrPort // addresses found without the controller (DHT)
 	best       discoPath
 	lastPing   time.Time
 	since      time.Time // when we learned about the peer
@@ -142,6 +143,23 @@ func candidates(p api.Peer) []netip.AddrPort {
 	return out
 }
 
+// addHints gives addresses found without the controller (DHT) to the
+// given peers: disco pings them, and only the peer holding the key answers.
+func (d *discoMgr) addHints(nodeIDs []string, addrs []netip.AddrPort) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, id := range nodeIDs {
+		if dp, ok := d.peers[id]; ok {
+			dp.hints = nil
+			for _, a := range addrs {
+				if len(dp.hints) < maxCandidates && !slices.Contains(dp.candidates, a) {
+					dp.hints = append(dp.hints, a)
+				}
+			}
+		}
+	}
+}
+
 // endpoint returns the confirmed path to a peer, or fallback.
 func (d *discoMgr) endpoint(nodeID, fallback string) string {
 	d.mu.Lock()
@@ -187,7 +205,7 @@ func (d *discoMgr) tick() {
 			lost = true
 		}
 		interval := discoSearch
-		targets := append(slices.Clone(dp.candidates), dp.learned...)
+		targets := append(append(slices.Clone(dp.candidates), dp.learned...), dp.hints...)
 		switch {
 		case dp.best.addr.IsValid() && magicsock.IsRelay(dp.best.addr):
 			// Relayed for now: keep looking for a direct path — eagerly at

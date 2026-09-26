@@ -109,6 +109,8 @@ var migrations = []string{
 	`ALTER TABLE rooms ADD COLUMN dns TEXT NOT NULL DEFAULT 'null';`,
 	// 10 (0.4.1): the room's access rules (text form, package acl).
 	`ALTER TABLE rooms ADD COLUMN acl TEXT NOT NULL DEFAULT '';`,
+	// 11 (0.5.1): members look each other up in the public DHT.
+	`ALTER TABLE rooms ADD COLUMN dht INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // SchemaVersion is the version a fully migrated database has.
@@ -444,6 +446,7 @@ type Room struct {
 	Broadcast  string // "on", "off" or "mdns"
 	DNS        []netip.Addr
 	ACL        string // access rules, text form (package acl)
+	DHT        bool   // members use the public DHT to find each other
 	Version    int64
 	CreatedAt  time.Time
 }
@@ -462,7 +465,7 @@ func (t *Tx) CreateRoom(r *Room) error {
 	return err
 }
 
-const roomCols = `id, name, subnet, secret, sign_key, owner_id, join_policy, version, created_at, broadcast, dns, acl`
+const roomCols = `id, name, subnet, secret, sign_key, owner_id, join_policy, version, created_at, broadcast, dns, acl, dht`
 
 // openRoom unseals a room's secrets.
 func (t *Tx) openRoom(r *Room, err error) (*Room, error) {
@@ -482,7 +485,7 @@ func scanRoom(row interface{ Scan(...any) error }) (*Room, error) {
 	var r Room
 	var subnet, dns string
 	var created int64
-	if err := row.Scan(&r.ID, &r.Name, &subnet, &r.Secret, &r.SignKey, &r.OwnerID, &r.JoinPolicy, &r.Version, &created, &r.Broadcast, &dns, &r.ACL); err != nil {
+	if err := row.Scan(&r.ID, &r.Name, &subnet, &r.Secret, &r.SignKey, &r.OwnerID, &r.JoinPolicy, &r.Version, &created, &r.Broadcast, &dns, &r.ACL, &r.DHT); err != nil {
 		return nil, notFound(err)
 	}
 	json.Unmarshal([]byte(dns), &r.DNS)
@@ -534,6 +537,12 @@ func (t *Tx) AllSubnets() ([]netip.Prefix, error) {
 
 func (t *Tx) UpdateRoom(id, name, joinPolicy, broadcast string) error {
 	_, err := t.tx.Exec(`UPDATE rooms SET name = ?, join_policy = ?, broadcast = ? WHERE id = ?`, name, joinPolicy, broadcast, id)
+	return err
+}
+
+// SetRoomDHT switches the public DHT lookup of members on or off.
+func (t *Tx) SetRoomDHT(id string, on bool) error {
+	_, err := t.tx.Exec(`UPDATE rooms SET dht = ? WHERE id = ?`, on, id)
 	return err
 }
 

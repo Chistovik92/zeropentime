@@ -114,6 +114,8 @@ type Room struct {
 	// the room's DNS names.
 	ZoneName    string                `yaml:"-"`
 	ZoneRecords map[string]netip.Addr `yaml:"-"`
+	// DHT: look up members in the public DHT (room setting).
+	DHT bool `yaml:"-"`
 	// Policy is the room's access rules (nil: everything allowed).
 	Policy *acl.Policy `yaml:"-"`
 	// PeerNodes maps peer keys to node IDs; ExitPeer is the exit's node ID.

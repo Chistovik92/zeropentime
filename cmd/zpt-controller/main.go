@@ -35,7 +35,7 @@ const usage = `zpt-controller — контроллер zeropentime (админ-�
 у команд просмотра -json — вывод для скриптов.
   room create  -owner ЛОГИН -name ИМЯ [-subnet 10.100.1.0/24] [-policy manual|auto]
   room list | room show -room R
-  room set     -room R [-name ИМЯ] [-policy manual|auto] [-broadcast on|off|mdns]
+  room set     -room R [-name ИМЯ] [-policy manual|auto] [-broadcast on|off|mdns] [-dht on|off]
   room dns     -room R -servers "10.100.1.5, 9.9.9.9"      (пусто — убрать)
   room delete  -room R
   member list  -room R

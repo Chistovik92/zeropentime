@@ -60,6 +60,10 @@ type Options struct {
 	LocalAddrs func() []netip.Addr
 	// BlockDirectForTests accepts only relayed traffic (tests only).
 	BlockDirectForTests bool
+	// DHTBootstrap overrides the DHT entry points (tests); nil: public ones.
+	DHTBootstrap []string
+	// DHTEvery overrides how often the DHT is used (tests); 0: dhtEvery.
+	DHTEvery time.Duration
 	// BlockUDPRelayForTests ignores the relay over UDP, forcing VLESS (tests only).
 	BlockUDPRelayForTests bool
 }
@@ -151,9 +155,10 @@ func Start(o Options) (_ *Node, err error) {
 	if o.StatePath != "" {
 		n.disco = newDiscoMgr(n)
 		sock.SetDisco(disco.TagKey(n.disco.pub), n.disco.handle)
-		n.wg.Add(2)
+		n.wg.Add(3)
 		go func() { defer n.wg.Done(); n.disco.run(ctx) }()
 		go n.supervise(ctx)
+		go func() { defer n.wg.Done(); n.dhtLoop(ctx) }()
 	}
 	if !o.Config.Userspace && o.Config.PortMapEnabled() {
 		n.wg.Add(1)
@@ -590,7 +595,7 @@ func (n *Node) roomFromConfig(url, keyStr string, rs api.RoomState, nm *api.NetM
 	n.versions[rs.RoomID] = cfg.Version
 
 	me := n.ID.NodeID()
-	rc := &config.Room{Name: cfg.Name, Secret: cfg.Secret, MTU: config.DefaultMTU, Broadcast: cfg.Broadcast, RoomDNS: cfg.DNS}
+	rc := &config.Room{Name: cfg.Name, Secret: cfg.Secret, MTU: config.DefaultMTU, Broadcast: cfg.Broadcast, RoomDNS: cfg.DNS, DHT: cfg.DHT}
 	exitID := n.exitPeerLocked(exit, rs, cfg)
 	rc.ZoneName, rc.ZoneRecords = n.zoneNameLocked(rs.RoomID, cfg.Name), map[string]netip.Addr{}
 	if len(cfg.ACL) > 0 {

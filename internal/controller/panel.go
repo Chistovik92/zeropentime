@@ -352,6 +352,9 @@ func (h *Server) roomSettings(w http.ResponseWriter, r *http.Request, u *store.U
 	if err == nil {
 		err = h.svc.SetRoomDNS(r.Context(), u, id, r.PostFormValue("dns"))
 	}
+	if err == nil {
+		err = h.svc.SetRoomDHT(r.Context(), u, id, r.PostFormValue("dht") == "on")
+	}
 	back(w, r, "/rooms/"+id, err, "Настройки сохранены")
 }
 

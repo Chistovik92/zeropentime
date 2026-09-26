@@ -246,6 +246,25 @@ func (s *Service) Backup(ctx context.Context, u *store.User, path string) error 
 	return s.st.Tx(ctx, func(tx *store.Tx) error { return tx.Audit(u.Login, "backup", "", "") })
 }
 
+// SetRoomDHT lets the members of a room find each other through the
+// public BitTorrent DHT when the controller is unreachable. Their public
+// addresses then appear in the DHT under a key derived from the room
+// secret, so it is the room admin's choice.
+func (s *Service) SetRoomDHT(ctx context.Context, u *store.User, roomID string, on bool) error {
+	return s.change(ctx, func(tx *store.Tx) error {
+		if _, err := s.roomFor(tx, u, roomID); err != nil {
+			return err
+		}
+		if err := tx.SetRoomDHT(roomID, on); err != nil {
+			return err
+		}
+		if err := tx.BumpRoom(roomID); err != nil {
+			return err
+		}
+		return tx.Audit(u.Login, "room.dht", roomID, fmt.Sprint(on))
+	})
+}
+
 // SetRoomACL sets the room's access rules (package acl text form; empty:
 // everything allowed). They are checked and kept as written, comments too.
 func (s *Service) SetRoomACL(ctx context.Context, u *store.User, roomID, text string) error {
@@ -808,7 +827,7 @@ func (s *Service) netMap(ctx context.Context, nodeID string) (*api.NetMap, error
 				if err != nil {
 					return err
 				}
-				cfg := &pki.RoomConfig{RoomID: r.ID, Name: r.Name, Subnet: r.Subnet, Version: r.Version, IssuedAt: s.now().UTC(), Broadcast: r.Broadcast, DNS: r.DNS}
+				cfg := &pki.RoomConfig{RoomID: r.ID, Name: r.Name, Subnet: r.Subnet, Version: r.Version, IssuedAt: s.now().UTC(), Broadcast: r.Broadcast, DNS: r.DNS, DHT: r.DHT}
 				if cfg.ACL, err = acl.Parse(r.ACL); err != nil {
 					return err
 				}

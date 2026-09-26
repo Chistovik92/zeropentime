@@ -29,6 +29,7 @@ import (
 	"github.com/Chistovik92/zeropentime/internal/client"
 	"github.com/Chistovik92/zeropentime/internal/config"
 	"github.com/Chistovik92/zeropentime/internal/controller"
+	"github.com/Chistovik92/zeropentime/internal/dht/dhttest"
 	"github.com/Chistovik92/zeropentime/internal/identity"
 	"github.com/Chistovik92/zeropentime/internal/node"
 	"github.com/Chistovik92/zeropentime/internal/store"
@@ -70,6 +71,9 @@ type env struct {
 	log   *slog.Logger
 	url   string
 	admin *store.User
+	// DHT for the nodes started from now on (nil: none).
+	dhtBoot  []string
+	dhtEvery time.Duration
 }
 
 func newEnv(t *testing.T) *env {
@@ -201,6 +205,7 @@ func (e *env) nodeCfg(name string, locals func(uint16, []netip.Prefix) []netip.A
 	n, err := node.Start(node.Options{
 		Config: cfg, Identity: id, Log: e.log.With("node", name), StatePath: tn.state, Version: "test",
 		LocalEndpoints: locals, BlockDirectForTests: blockDirect, BlockUDPRelayForTests: blockUDPRelay,
+		DHTBootstrap: e.dhtBoot, DHTEvery: e.dhtEvery,
 	})
 	if err != nil {
 		e.t.Fatal(err)
@@ -922,4 +927,35 @@ func TestGossipRevocation(t *testing.T) {
 	e.act(room.ID, c, controller.ActKick)
 	eventually(t, 10*time.Second, "b drops c (controller)", hasRoom(b, "game", 1))
 	eventually(t, 30*time.Second, "a drops c (gossip from b)", hasRoom(a, "game", 1))
+}
+
+// 0.5.1: with DHT allowed in the room, members announce their UDP ports in
+// the DHT (here a local one) and look each other up; without it they stay
+// out of the DHT.
+func TestDHTAnnounce(t *testing.T) {
+	e := newEnv(t)
+	nw := dhttest.New(t, 4)
+	e.dhtBoot, e.dhtEvery = nw.Bootstrap(), 500*time.Millisecond
+	room := e.room("game", "auto")
+	a, b := e.node("a"), e.node("b")
+	e.mustJoin(a, e.invite(room.ID, 0, false), "alice", "active")
+	e.mustJoin(b, e.invite(room.ID, 0, false), "bob", "active")
+	eventually(t, 15*time.Second, "room up", hasRoom(a, "game", 1))
+	time.Sleep(2 * time.Second)
+	if got := nw.Announced(); len(got) != 0 {
+		t.Fatalf("announced without the room setting: %v", got)
+	}
+	if err := e.svc.SetRoomDHT(context.Background(), e.admin, room.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 20*time.Second, "both members in the DHT", func() error {
+		ports := map[uint16]bool{}
+		for _, p := range nw.Announced() {
+			ports[p.Port()] = true
+		}
+		if !ports[a.node.Port()] || !ports[b.node.Port()] {
+			return fmt.Errorf("announced %v, want ports %d and %d", nw.Announced(), a.node.Port(), b.node.Port())
+		}
+		return nil
+	})
 }
