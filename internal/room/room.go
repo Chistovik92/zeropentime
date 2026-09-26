@@ -22,6 +22,7 @@ import (
 	"github.com/amnezia-vpn/amneziawg-go/tun"
 	"github.com/amnezia-vpn/amneziawg-go/tun/netstack"
 
+	"github.com/Chistovik92/zeropentime/internal/acl"
 	"github.com/Chistovik92/zeropentime/internal/config"
 	"github.com/Chistovik92/zeropentime/internal/dnsfwd"
 	"github.com/Chistovik92/zeropentime/internal/exitnat"
@@ -528,6 +529,16 @@ func (r *Room) Exit() (bool, []netip.Addr) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.exit, slices.Clone(r.dns)
+}
+
+// SetPolicy applies the room's access rules to incoming packets (nil or
+// no rules: everything allowed).
+func (r *Room) SetPolicy(pol *acl.Policy) {
+	if pol == nil || len(pol.Rules) == 0 {
+		r.bcast.SetFilter(nil)
+		return
+	}
+	r.bcast.SetFilter(acl.NewFilter(pol, r.Address.Addr()))
 }
 
 // Ifname is the OS interface of the room ("netstack" in userspace mode).

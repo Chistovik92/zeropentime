@@ -850,3 +850,53 @@ func TestRoomDNS(t *testing.T) {
 		return nil
 	})
 }
+
+// 0.4.1: access rules. "Guests only to the game server": with the rules
+// in force a guest cannot reach another member, the game server can; the
+// server's replies pass; removing the rules opens everything again.
+func TestAccessRules(t *testing.T) {
+	e := newEnv(t)
+	room := e.room("game", "auto")
+	srv := e.node("srv")
+	guest := e.node("guest")
+	e.mustJoin(srv, e.invite(room.ID, 0, false), "server", "active")
+	e.mustJoin(guest, e.invite(room.ID, 0, false), "guest", "active")
+	ctx := context.Background()
+	eventually(t, 15*time.Second, "room up", hasRoom(guest, "game", 1))
+	v, _ := e.svc.Room(ctx, e.admin, room.ID)
+	for _, m := range v.Members {
+		tags := "game"
+		if m.Name == "guest" {
+			tags = "guest"
+		}
+		if err := e.svc.UpdateMember(ctx, e.admin, room.ID, m.NodeID, m.Name, m.IP.String(), tags); err != nil {
+			t.Fatal(err)
+		}
+	}
+	atSrv := serveEcho(t, srv, "game")
+	atGuest := serveEcho(t, guest, "game")
+	eventually(t, 15*time.Second, "open room", func() error { return talk(srv, "game", atGuest, 2*time.Second) })
+
+	if err := e.svc.SetRoomACL(ctx, e.admin, room.ID, "allow tag:guest -> tag:game tcp:7000"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, rule, err := e.svc.TestACL(ctx, e.admin, room.ID, "guest", "server", "tcp", 7000); err != nil || !ok || rule == "" {
+		t.Fatalf("what-if guest->server: %v %q %v", ok, rule, err)
+	}
+	if ok, _, _ := e.svc.TestACL(ctx, e.admin, room.ID, "server", "guest", "tcp", 7000); ok {
+		t.Fatal("what-if server->guest must be denied")
+	}
+	eventually(t, 10*time.Second, "server cannot open connections to the guest", func() error {
+		if talk(srv, "game", atGuest, time.Second) == nil {
+			return errors.New("still reachable")
+		}
+		return nil
+	})
+	if err := talk(guest, "game", atSrv, 5*time.Second); err != nil {
+		t.Fatalf("guest -> game server (allowed, replies must pass): %v", err)
+	}
+	if err := e.svc.SetRoomACL(ctx, e.admin, room.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 10*time.Second, "rules removed", func() error { return talk(srv, "game", atGuest, 2*time.Second) })
+}

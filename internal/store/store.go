@@ -74,6 +74,8 @@ var migrations = []string{
 	`ALTER TABLE nodes ADD COLUMN exit_dns INTEGER NOT NULL DEFAULT 0;`,
 	// 9 (0.3.4): the room's own DNS servers.
 	`ALTER TABLE rooms ADD COLUMN dns TEXT NOT NULL DEFAULT 'null';`,
+	// 10 (0.4.1): the room's access rules (text form, package acl).
+	`ALTER TABLE rooms ADD COLUMN acl TEXT NOT NULL DEFAULT '';`,
 }
 
 // SchemaVersion is the version a fully migrated database has.
@@ -392,6 +394,7 @@ type Room struct {
 	JoinPolicy string // "manual" or "auto"
 	Broadcast  string // "on", "off" or "mdns"
 	DNS        []netip.Addr
+	ACL        string // access rules, text form (package acl)
 	Version    int64
 	CreatedAt  time.Time
 }
@@ -402,13 +405,13 @@ func (t *Tx) CreateRoom(r *Room) error {
 	return err
 }
 
-const roomCols = `id, name, subnet, secret, sign_key, owner_id, join_policy, version, created_at, broadcast, dns`
+const roomCols = `id, name, subnet, secret, sign_key, owner_id, join_policy, version, created_at, broadcast, dns, acl`
 
 func scanRoom(row interface{ Scan(...any) error }) (*Room, error) {
 	var r Room
 	var subnet, dns string
 	var created int64
-	if err := row.Scan(&r.ID, &r.Name, &subnet, &r.Secret, &r.SignKey, &r.OwnerID, &r.JoinPolicy, &r.Version, &created, &r.Broadcast, &dns); err != nil {
+	if err := row.Scan(&r.ID, &r.Name, &subnet, &r.Secret, &r.SignKey, &r.OwnerID, &r.JoinPolicy, &r.Version, &created, &r.Broadcast, &dns, &r.ACL); err != nil {
 		return nil, notFound(err)
 	}
 	json.Unmarshal([]byte(dns), &r.DNS)
@@ -460,6 +463,12 @@ func (t *Tx) AllSubnets() ([]netip.Prefix, error) {
 
 func (t *Tx) UpdateRoom(id, name, joinPolicy, broadcast string) error {
 	_, err := t.tx.Exec(`UPDATE rooms SET name = ?, join_policy = ?, broadcast = ? WHERE id = ?`, name, joinPolicy, broadcast, id)
+	return err
+}
+
+// SetRoomACL sets the room's access rules (text form, "" = none).
+func (t *Tx) SetRoomACL(id, rules string) error {
+	_, err := t.tx.Exec(`UPDATE rooms SET acl = ? WHERE id = ?`, rules, id)
 	return err
 }
 

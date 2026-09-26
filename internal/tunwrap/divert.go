@@ -91,6 +91,9 @@ func (d *Device) readPumped(bufs [][]byte, sizes []int, offset int) (int, error)
 			}
 			return nil
 		}
+		if f := d.filter.Load(); f != nil {
+			f.Outbound(pkt)
+		}
 		if n < len(bufs) && offset+len(pkt) <= len(bufs[n]) {
 			sizes[n] = copy(bufs[n][offset:], pkt)
 			n++

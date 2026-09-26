@@ -22,6 +22,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Chistovik92/zeropentime/internal/acl"
 	"github.com/Chistovik92/zeropentime/internal/api"
 	"github.com/Chistovik92/zeropentime/internal/identity"
 	"github.com/Chistovik92/zeropentime/internal/obfs"
@@ -232,6 +233,75 @@ func (s *Service) SetRoomDNS(ctx context.Context, u *store.User, roomID, servers
 		}
 		return tx.Audit(u.Login, "room.dns", roomID, fmt.Sprint(dns))
 	})
+}
+
+// SetRoomACL sets the room's access rules (package acl text form; empty:
+// everything allowed). They are checked and kept as written, comments too.
+func (s *Service) SetRoomACL(ctx context.Context, u *store.User, roomID, text string) error {
+	rules, err := acl.Parse(text)
+	if err != nil {
+		return invalid("правила: %v", err)
+	}
+	return s.change(ctx, func(tx *store.Tx) error {
+		if _, err := s.roomFor(tx, u, roomID); err != nil {
+			return err
+		}
+		text := strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
+		if len(rules) == 0 {
+			text = ""
+		} else {
+			text += "\n"
+		}
+		if err := tx.SetRoomACL(roomID, text); err != nil {
+			return err
+		}
+		if err := tx.BumpRoom(roomID); err != nil {
+			return err
+		}
+		return tx.Audit(u.Login, "room.acl", roomID, fmt.Sprintf("%d правил", len(rules)))
+	})
+}
+
+// TestACL answers "what if": may traffic from one member reach a member
+// or an address on a protocol and port? It returns the allowing rule
+// (text) or "" when nothing allows it.
+func (s *Service) TestACL(ctx context.Context, u *store.User, roomID, from, to, proto string, port int) (bool, string, error) {
+	v, err := s.Room(ctx, u, roomID)
+	if err != nil {
+		return false, "", err
+	}
+	rules, err := acl.Parse(v.Room.ACL)
+	if err != nil {
+		return false, "", err
+	}
+	pol := &acl.Policy{Rules: rules, Subnet: v.Room.Subnet}
+	var src, dst netip.Addr
+	for _, m := range v.Members {
+		pol.Members = append(pol.Members, acl.Member{Name: m.Name, IP: m.IP, Tags: m.Tags})
+		if strings.EqualFold(m.Name, from) || m.NodeID == from {
+			src = m.IP
+		}
+		if strings.EqualFold(m.Name, to) || m.NodeID == to {
+			dst = m.IP
+		}
+	}
+	if !src.IsValid() {
+		return false, "", invalid("в комнате нет участника %q", from)
+	}
+	if !dst.IsValid() {
+		if dst, err = netip.ParseAddr(to); err != nil {
+			return false, "", invalid("куда: имя участника или IP-адрес, а не %q", to)
+		}
+	}
+	p := map[string]int{"tcp": acl.TCP, "udp": acl.UDP, "icmp": acl.ICMP}[strings.ToLower(proto)]
+	if p == 0 || port < 0 || port > 65535 {
+		return false, "", invalid("протокол tcp, udp или icmp и порт 0–65535")
+	}
+	ok, i := pol.Allowed(src, dst, p, uint16(port))
+	if !ok || i < 0 {
+		return ok, "", nil
+	}
+	return true, strings.TrimSpace(acl.String(rules[i : i+1])), nil
 }
 
 func (s *Service) DeleteRoom(ctx context.Context, u *store.User, roomID string) error {
@@ -728,6 +798,9 @@ func (s *Service) netMap(ctx context.Context, nodeID string) (*api.NetMap, error
 					return err
 				}
 				cfg := &pki.RoomConfig{RoomID: r.ID, Name: r.Name, Subnet: r.Subnet, Version: r.Version, IssuedAt: s.now().UTC(), Broadcast: r.Broadcast, DNS: r.DNS}
+				if cfg.ACL, err = acl.Parse(r.ACL); err != nil {
+					return err
+				}
 				copy(cfg.Secret[:], r.Secret)
 				for _, o := range members {
 					if o.Status != store.StatusActive {

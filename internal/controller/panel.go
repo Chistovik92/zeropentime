@@ -245,6 +245,8 @@ func (h *Server) routesPanel(mux *http.ServeMux) {
 	mux.Handle("POST /rooms", h.auth(h.roomCreate))
 	mux.Handle("GET /rooms/{id}", h.auth(h.roomPage))
 	mux.Handle("POST /rooms/{id}/settings", h.auth(h.roomSettings))
+	mux.Handle("POST /rooms/{id}/acl", h.auth(h.roomACL))
+	mux.Handle("POST /rooms/{id}/acl-test", h.auth(h.roomACLTest))
 	mux.Handle("POST /rooms/{id}/delete", h.auth(h.roomDelete))
 	mux.Handle("POST /rooms/{id}/invites", h.auth(h.inviteCreate))
 	mux.Handle("POST /rooms/{id}/invites/{inv}/revoke", h.auth(h.inviteRevoke))
@@ -347,6 +349,32 @@ func (h *Server) roomSettings(w http.ResponseWriter, r *http.Request, u *store.U
 		err = h.svc.SetRoomDNS(r.Context(), u, id, r.PostFormValue("dns"))
 	}
 	back(w, r, "/rooms/"+id, err, "Настройки сохранены")
+}
+
+func (h *Server) roomACL(w http.ResponseWriter, r *http.Request, u *store.User, _ string) {
+	id := r.PathValue("id")
+	err := h.svc.SetRoomACL(r.Context(), u, id, r.PostFormValue("acl"))
+	back(w, r, "/rooms/"+id, err, "Правила доступа сохранены")
+}
+
+func (h *Server) roomACLTest(w http.ResponseWriter, r *http.Request, u *store.User, _ string) {
+	id := r.PathValue("id")
+	from, to, proto := r.PostFormValue("from"), r.PostFormValue("to"), r.PostFormValue("proto")
+	port, _ := strconv.Atoi(r.PostFormValue("port"))
+	ok, rule, err := h.svc.TestACL(r.Context(), u, id, from, to, proto, port)
+	what := fmt.Sprintf("%s → %s %s:%d", from, to, proto, port)
+	switch {
+	case err != nil:
+	case ok && rule == "":
+		back(w, r, "/rooms/"+id, nil, what+": разрешено — правил нет, в комнате разрешено всё")
+		return
+	case ok:
+		back(w, r, "/rooms/"+id, nil, what+": разрешено правилом «"+rule+"»")
+		return
+	default:
+		err = invalid("%s: запрещено — ни одно правило это не разрешает", what)
+	}
+	back(w, r, "/rooms/"+id, err, "")
 }
 
 func (h *Server) roomDelete(w http.ResponseWriter, r *http.Request, u *store.User, _ string) {

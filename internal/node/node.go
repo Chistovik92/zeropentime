@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Chistovik92/zeropentime/internal/acl"
 	"github.com/Chistovik92/zeropentime/internal/api"
 	"github.com/Chistovik92/zeropentime/internal/client"
 	"github.com/Chistovik92/zeropentime/internal/config"
@@ -252,6 +253,7 @@ func (n *Node) startLocked(key, controller string, rc config.Room) error {
 	r.SetRouter(rc.Routing, rc.ExitNode)
 	r.SetExit(rc.Exit)
 	r.SetZone(zoneOf(rc))
+	r.SetPolicy(rc.Policy)
 	n.rooms[key] = &running{room: r, tagKey: prof.TagKey, controller: controller, cfg: rc}
 	return nil
 }
@@ -523,6 +525,9 @@ func (n *Node) apply(url string, nm *api.NetMap) {
 				cur.room.SetRouter(rc.Routing, rc.ExitNode)
 				cur.room.SetExit(rc.Exit)
 				cur.room.SetZone(zoneOf(rc))
+				if !samePolicy(cur.cfg.Policy, rc.Policy) {
+					cur.room.SetPolicy(rc.Policy)
+				}
 				cur.cfg = rc
 				continue
 			}
@@ -564,6 +569,13 @@ func (n *Node) roomFromConfig(url, keyStr string, rs api.RoomState, nm *api.NetM
 	rc := &config.Room{Name: cfg.Name, Secret: cfg.Secret, MTU: config.DefaultMTU, Broadcast: cfg.Broadcast, RoomDNS: cfg.DNS}
 	exitID := n.exitPeerLocked(exit, rs, cfg)
 	rc.ZoneName, rc.ZoneRecords = n.zoneNameLocked(rs.RoomID, cfg.Name), map[string]netip.Addr{}
+	if len(cfg.ACL) > 0 {
+		pol := &acl.Policy{Rules: cfg.ACL, Subnet: cfg.Subnet}
+		for _, m := range cfg.Members {
+			pol.Members = append(pol.Members, acl.Member{Name: m.Name, IP: m.IP, Tags: m.Tags})
+		}
+		rc.Policy = pol
+	}
 	for _, m := range cfg.Members {
 		if l := dnsfwd.Label(m.Name); l != "" {
 			if _, dup := rc.ZoneRecords[l]; !dup {
@@ -734,6 +746,15 @@ func (n *Node) zoneNameLocked(key, name string) string {
 		}
 	}
 	return z
+}
+
+// samePolicy keeps the flow table when the rules did not change (a
+// netmap arrives for every change in any room).
+func samePolicy(a, b *acl.Policy) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return acl.String(a.Rules) == acl.String(b.Rules) && fmt.Sprint(a.Members) == fmt.Sprint(b.Members)
 }
 
 // zoneOf is the DNS zone of a room config (nil if it has none).

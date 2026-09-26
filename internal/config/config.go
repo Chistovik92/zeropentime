@@ -16,6 +16,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/Chistovik92/zeropentime/internal/acl"
 	"github.com/Chistovik92/zeropentime/internal/identity"
 	"github.com/Chistovik92/zeropentime/internal/obfs"
 )
@@ -113,6 +114,8 @@ type Room struct {
 	// the room's DNS names.
 	ZoneName    string                `yaml:"-"`
 	ZoneRecords map[string]netip.Addr `yaml:"-"`
+	// Policy is the room's access rules (nil: everything allowed).
+	Policy *acl.Policy `yaml:"-"`
 	// PeerNodes maps peer keys to node IDs; ExitPeer is the exit's node ID.
 	PeerNodes map[identity.Key]string `yaml:"-"`
 	ExitPeer  string                  `yaml:"-"`

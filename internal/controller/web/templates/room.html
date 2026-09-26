@@ -95,6 +95,27 @@
 </section>
 
 <section class="card">
+  <h2>Правила доступа</h2>
+  <p class="muted small">Пусто — в комнате разрешено всё. Если правила есть, разрешено только то, что они разрешают (ответы на разрешённые соединения проходят всегда). Одно правило в строке: <span class="mono">allow ОТКУДА -&gt; КУДА [ПОРТЫ]</span>; ОТКУДА и КУДА — <span class="mono">*</span>, <span class="mono">tag:тег</span>, имя участника, сеть <span class="mono">192.168.1.0/24</span>, для КУДА ещё <span class="mono">internet</span> (через exit); порты — <span class="mono">tcp:22</span>, <span class="mono">udp:27015-27030</span>, <span class="mono">tcp:*</span>, <span class="mono">icmp</span>. Строки с # — комментарии.</p>
+  <form method="post" action="/rooms/{{$room.ID}}/acl">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <textarea name="acl" rows="7" class="mono acl" placeholder="# гости — только на игровой сервер&#10;allow tag:guest -&gt; tag:game udp:27015-27030 tcp:27015&#10;allow tag:admin -&gt; *">{{$room.ACL}}</textarea>
+    <div><button>Сохранить правила</button></div>
+  </form>
+  <h3>Проверка «что если»</h3>
+  <form method="post" action="/rooms/{{$room.ID}}/acl-test" class="row">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <select name="from" aria-label="откуда">{{range .Members}}<option value="{{.Name}}">{{.Name}}</option>{{end}}</select>
+    <span>→</span>
+    <input name="to" list="acl-members" class="acl-to" placeholder="участник или IP" aria-label="куда" required>
+    <datalist id="acl-members">{{range .Members}}<option value="{{.Name}}">{{end}}</datalist>
+    <select name="proto" aria-label="протокол"><option>tcp</option><option>udp</option><option>icmp</option></select>
+    <input name="port" type="number" min="0" max="65535" value="80" class="ip" aria-label="порт">
+    <button class="small">Проверить</button>
+  </form>
+</section>
+
+<section class="card">
   <h2>Настройки</h2>
   <form method="post" action="/rooms/{{$room.ID}}/settings" class="grid">
     <input type="hidden" name="csrf" value="{{$csrf}}">

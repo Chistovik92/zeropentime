@@ -30,8 +30,8 @@ pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; 
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
 th { font-size: 13px; color: var(--muted); font-weight: 600; }
-input, select, button { font: inherit; }
-input, select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); min-width: 0; }
+input, select, button, textarea { font: inherit; }
+input, select, textarea { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); min-width: 0; }
 button { padding: 7px 14px; border: 0; border-radius: 6px; background: var(--accent); color: var(--accent-text); cursor: pointer; }
 button.small { padding: 4px 10px; font-size: 13px; }
 button.danger { background: var(--danger); }
@@ -45,6 +45,8 @@ label.check { flex-direction: row; align-items: center; gap: 8px; }
 .row input { width: 130px; }
 .row input.ip { width: 120px; }
 .actions { min-width: 220px; }
+textarea.acl { width: 100%; box-sizing: border-box; margin: 6px 0 10px; font-family: ui-monospace, Consolas, monospace; }
+input.acl-to { min-width: 180px; }
 .actions form { display: inline-block; margin: 2px 4px 2px 0; }
 .flash { padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; }
 .flash.ok { background: var(--ok-bg); color: var(--ok); }

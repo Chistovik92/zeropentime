@@ -47,6 +47,8 @@ const usage = `zpt-controller — контроллер zeropentime (админ-�
   exit approve|revoke   -room R -member M                 exit-узел
   exit use     -room R -member M [-via EXIT]              назначить exit (без -via — напрямую)
   user add -login ЛОГИН [-admin] | user list | user delete -login ЛОГИН | user passwd -login ЛОГИН
+  acl show -room R | acl set -room R -file ПРАВИЛА|-      правила доступа (пустой файл — убрать)
+  acl test -room R -from M -to M|IP [-proto tcp] [-port 22]  проверка «что если»
   audit [-n 50]                                           журнал действий
   useradd / passwd -login ЛОГИН                           то же, что user add / user passwd
 `
@@ -133,7 +135,7 @@ func run(sub string, args []string) error {
 		}
 		fmt.Printf("новый пароль для %s: %s\n", *login, pw)
 		return nil
-	case "room", "member", "invite", "routes", "exit", "user", "audit":
+	case "room", "member", "invite", "routes", "exit", "user", "audit", "acl":
 		return runAdmin(sub, args)
 	case "version":
 		fmt.Println("zpt-controller", version)

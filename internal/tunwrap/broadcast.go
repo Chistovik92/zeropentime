@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/amnezia-vpn/amneziawg-go/tun"
+
+	"github.com/Chistovik92/zeropentime/internal/acl"
 )
 
 // Port carries wrapped broadcasts inside the room.
@@ -72,6 +74,9 @@ type Device struct {
 	window  time.Time
 	counter int
 
+	// Access rules of the room (nil: everything allowed).
+	filter atomic.Pointer[acl.Filter]
+
 	// Userspace exit node (divert.go).
 	divert       atomic.Pointer[divertFunc]
 	pumpCh       chan pumped
@@ -86,6 +91,10 @@ func New(dev tun.Device, self netip.Prefix, mode string) *Device {
 	d.peers.Store(&[]netip.Addr{})
 	return d
 }
+
+// SetFilter applies the room's access rules to incoming packets (nil:
+// everything allowed).
+func (d *Device) SetFilter(f *acl.Filter) { d.filter.Store(f) }
 
 // SetMode switches forwarding ("on", "off", "mdns"; empty means on).
 func (d *Device) SetMode(m string) {
@@ -225,6 +234,9 @@ func (d *Device) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
 			}
 			continue
 		}
+		if f := d.filter.Load(); f != nil {
+			f.Outbound(pkt)
+		}
 		if out != i {
 			copy(bufs[out][offset:], pkt)
 		}
@@ -254,7 +266,17 @@ func (d *Device) drainLocked(bufs [][]byte, sizes []int, offset, n int) int {
 func (d *Device) Write(bufs [][]byte, offset int) (int, error) {
 	keep := bufs[:0:0]
 	divert := d.divert.Load()
+	filter := d.filter.Load()
 	for _, b := range bufs {
+		if filter != nil {
+			view := b[offset:]
+			if inner, isWrap := d.unwrap(view); isWrap {
+				view = inner
+			}
+			if view != nil && !filter.Inbound(view) {
+				continue
+			}
+		}
 		if divert != nil && (*divert)(b[offset:]) {
 			continue
 		}

@@ -26,6 +26,7 @@ import (
 
 	"golang.org/x/crypto/nacl/box"
 
+	"github.com/Chistovik92/zeropentime/internal/acl"
 	"github.com/Chistovik92/zeropentime/internal/identity"
 	"github.com/Chistovik92/zeropentime/internal/obfs"
 )
@@ -73,6 +74,8 @@ type RoomConfig struct {
 	// DNS are the room's own DNS servers (a room admin's choice): inside
 	// the room or its approved networks, or anywhere on the internet.
 	DNS []netip.Addr `json:"dns,omitempty"`
+	// ACL are the room's access rules (none: everything allowed).
+	ACL []acl.Rule `json:"acl,omitempty"`
 }
 
 // Signed is a payload with an Ed25519 signature over it. The payload is

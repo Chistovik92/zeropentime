@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/netip"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/Chistovik92/zeropentime/internal/acl"
 	"github.com/Chistovik92/zeropentime/internal/controller"
 	"github.com/Chistovik92/zeropentime/internal/store"
 )
@@ -236,6 +238,11 @@ func runAdmin(sub string, args []string) error {
 	login := fl.String("login", "", "логин")
 	isAdmin := fl.Bool("admin", false, "администратор инстанса")
 	limit := fl.Int("n", 50, "сколько последних записей")
+	file := fl.String("file", "", "файл с правилами (- — стандартный ввод; пусто — убрать правила)")
+	from := fl.String("from", "", "откуда: участник")
+	to := fl.String("to", "", "куда: участник или IP")
+	proto := fl.String("proto", "tcp", "протокол: tcp, udp или icmp")
+	port := fl.Int("port", 0, "порт")
 	fl.Parse(args)
 	svc, closeDB, err := openService(*db, slog.New(slog.DiscardHandler))
 	if err != nil {
@@ -437,6 +444,67 @@ func runAdmin(sub string, args []string) error {
 			viaID = x.NodeID
 		}
 		return done(svc.SetMemberExit(a.ctx, cliAdmin, v.Room.ID, m.NodeID, viaID))
+
+	case "acl show":
+		v, err := a.room(*roomRef)
+		if err != nil {
+			return err
+		}
+		if a.json {
+			rules, err := acl.Parse(v.Room.ACL)
+			if err != nil {
+				return err
+			}
+			if rules == nil {
+				rules = []acl.Rule{}
+			}
+			return printJSON(rules)
+		}
+		if v.Room.ACL == "" {
+			fmt.Println("# правил нет: в комнате разрешено всё")
+			return nil
+		}
+		fmt.Print(v.Room.ACL)
+		return nil
+	case "acl set":
+		v, err := a.room(*roomRef)
+		if err != nil {
+			return err
+		}
+		var text []byte
+		switch *file {
+		case "":
+		case "-":
+			if text, err = io.ReadAll(os.Stdin); err != nil {
+				return err
+			}
+		default:
+			if text, err = os.ReadFile(*file); err != nil {
+				return err
+			}
+		}
+		return done(svc.SetRoomACL(a.ctx, cliAdmin, v.Room.ID, string(text)))
+	case "acl test":
+		v, err := a.room(*roomRef)
+		if err != nil {
+			return err
+		}
+		ok, rule, err := svc.TestACL(a.ctx, cliAdmin, v.Room.ID, *from, *to, *proto, *port)
+		if err != nil {
+			return err
+		}
+		if a.json {
+			return printJSON(map[string]any{"allowed": ok, "rule": rule})
+		}
+		switch {
+		case ok && rule == "":
+			fmt.Println("разрешено: правил нет, в комнате разрешено всё")
+		case ok:
+			fmt.Println("разрешено правилом:", rule)
+		default:
+			fmt.Println("запрещено: ни одно правило это не разрешает")
+		}
+		return nil
 
 	case "user add":
 		pw := controller.RandomPassword()
