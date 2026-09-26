@@ -99,6 +99,9 @@ func (n *Node) Status() control.Status {
 		}
 		if r.controller != "" {
 			cr.ID = ref.key
+			n.mu.Lock()
+			cr.Version = n.versions[ref.key]
+			n.mu.Unlock()
 		}
 		if exit {
 			s.Exit.Active, s.Exit.Room = true, cfg.Name

@@ -900,3 +900,25 @@ func TestAccessRules(t *testing.T) {
 	}
 	eventually(t, 10*time.Second, "rules removed", func() error { return talk(srv, "game", atGuest, 2*time.Second) })
 }
+
+// 0.5.0: gossip. A loses the controller; the admin kicks C. B learns it
+// from the controller and passes the signed config to A, which drops C —
+// a revocation reaches members that cannot see the controller.
+func TestGossipRevocation(t *testing.T) {
+	e := newEnv(t)
+	room := e.room("game", "auto")
+	a, b, c := e.node("a"), e.node("b"), e.node("c")
+	for _, x := range []struct {
+		tn   *testNode
+		name string
+	}{{a, "alice"}, {b, "bob"}, {c, "carol"}} {
+		e.mustJoin(x.tn, e.invite(room.ID, 0, false), x.name, "active")
+	}
+	for _, tn := range []*testNode{a, b, c} {
+		eventually(t, 20*time.Second, "room with two peers", hasRoom(tn, "game", 2))
+	}
+	a.node.DropControllerForTests(true)
+	e.act(room.ID, c, controller.ActKick)
+	eventually(t, 10*time.Second, "b drops c (controller)", hasRoom(b, "game", 1))
+	eventually(t, 30*time.Second, "a drops c (gossip from b)", hasRoom(a, "game", 1))
+}

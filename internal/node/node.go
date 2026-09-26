@@ -86,6 +86,9 @@ type Node struct {
 	syncs    map[string]syncInfo
 	started  time.Time
 	wake     chan struct{} // Reload
+	gossip   map[string]*gossipRoom
+	signed   map[string]*pki.Signed // newest accepted signed config per room
+	noCtrl   atomic.Bool            // tests: the controllers are unreachable
 
 	relayMu     sync.Mutex
 	vlessConn   atomic.Pointer[vless.PacketConn]
@@ -125,6 +128,7 @@ func Start(o Options) (_ *Node, err error) {
 		rooms: map[string]*running{}, versions: map[string]int64{}, pending: map[string]string{}, last: map[string]*api.NetMap{},
 		reports: map[string]netcheck.Report{}, changed: make(chan struct{}),
 		syncs: map[string]syncInfo{}, started: time.Now(), wake: make(chan struct{}, 1),
+		signed: map[string]*pki.Signed{},
 	}
 	defer func() {
 		if err != nil {
@@ -180,6 +184,9 @@ func (n *Node) changedCh() <-chan struct{} {
 	defer n.mu.Unlock()
 	return n.changed
 }
+
+// DropControllerForTests makes the controllers unreachable (tests only).
+func (n *Node) DropControllerForTests(v bool) { n.noCtrl.Store(v) }
 
 // DropDirectForTests switches off (or on) direct traffic at runtime (tests only).
 func (n *Node) DropDirectForTests(v bool) { n.sock.DropDirectForTests(v) }
@@ -254,6 +261,9 @@ func (n *Node) startLocked(key, controller string, rc config.Room) error {
 	r.SetExit(rc.Exit)
 	r.SetZone(zoneOf(rc))
 	r.SetPolicy(rc.Policy)
+	if controller != "" {
+		n.startGossipLocked(key, r)
+	}
 	n.rooms[key] = &running{room: r, tagKey: prof.TagKey, controller: controller, cfg: rc}
 	return nil
 }
@@ -263,6 +273,7 @@ func (n *Node) stopLocked(key string) {
 	if !ok {
 		return
 	}
+	n.stopGossipLocked(key)
 	r.room.Close()
 	n.sock.Unbind(r.tagKey)
 	delete(n.rooms, key)
@@ -371,6 +382,15 @@ func (n *Node) sync(ctx context.Context, url string) {
 			case <-pctx.Done():
 			}
 		}()
+		if n.noCtrl.Load() {
+			cancel()
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(200 * time.Millisecond):
+			}
+			continue
+		}
 		nm, err := cl.Poll(pctx, since, n.endpoints(url))
 		cancel()
 		if err != nil {
@@ -562,6 +582,10 @@ func (n *Node) roomFromConfig(url, keyStr string, rs api.RoomState, nm *api.NetM
 	}
 	if cfg.Version < n.versions[rs.RoomID] {
 		return nil, fmt.Errorf("config version %d is older than %d (rollback)", cfg.Version, n.versions[rs.RoomID])
+	}
+	if cfg.Version > n.versions[rs.RoomID] || n.signed[rs.RoomID] == nil {
+		n.signed[rs.RoomID] = rs.Config
+		n.kickGossipLocked(rs.RoomID)
 	}
 	n.versions[rs.RoomID] = cfg.Version
 

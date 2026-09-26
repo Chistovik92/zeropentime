@@ -27,6 +27,10 @@ type flow struct {
 	sport, dport uint16
 }
 
+// GossipPort is where members exchange signed room configs (TCP and UDP
+// on their room addresses); access rules never block it.
+const GossipPort = 4798
+
 const (
 	flowTTL  = 5 * time.Minute
 	maxFlows = 65536
@@ -108,6 +112,9 @@ func (f *Filter) Inbound(pkt []byte) bool {
 				return true
 			}
 		}
+	}
+	if (h.proto == TCP || h.proto == UDP) && h.dst == f.self && h.dport == GossipPort {
+		return true // members exchange room configs whatever the rules say
 	}
 	dst := h.dst
 	if dst.IsMulticast() || dst == netip.AddrFrom4([4]byte{255, 255, 255, 255}) || f.pol.Subnet.IsValid() && dst == lastAddr(f.pol.Subnet) {

@@ -6,9 +6,11 @@ package room
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/netip"
 	"runtime"
 	"slices"
@@ -539,6 +541,34 @@ func (r *Room) SetPolicy(pol *acl.Policy) {
 		return
 	}
 	r.bcast.SetFilter(acl.NewFilter(pol, r.Address.Addr()))
+}
+
+// ListenUDP listens on the room address (in the tunnel), in the OS or in
+// the in-process network stack.
+func (r *Room) ListenUDP(port uint16) (net.PacketConn, error) {
+	ap := netip.AddrPortFrom(r.Address.Addr(), port)
+	if r.Net != nil {
+		return r.Net.ListenUDPAddrPort(ap)
+	}
+	return net.ListenUDP("udp4", net.UDPAddrFromAddrPort(ap))
+}
+
+// ListenTCP listens on the room address.
+func (r *Room) ListenTCP(port uint16) (net.Listener, error) {
+	ap := netip.AddrPortFrom(r.Address.Addr(), port)
+	if r.Net != nil {
+		return r.Net.ListenTCPAddrPort(ap)
+	}
+	return net.ListenTCP("tcp4", net.TCPAddrFromAddrPort(ap))
+}
+
+// DialTCP connects to a member through the room.
+func (r *Room) DialTCP(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
+	if r.Net != nil {
+		return r.Net.DialContextTCPAddrPort(ctx, dst)
+	}
+	d := net.Dialer{LocalAddr: net.TCPAddrFromAddrPort(netip.AddrPortFrom(r.Address.Addr(), 0))}
+	return d.DialContext(ctx, "tcp4", dst.String())
 }
 
 // Ifname is the OS interface of the room ("netstack" in userspace mode).

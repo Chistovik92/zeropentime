@@ -68,7 +68,8 @@ type Room struct {
 	ExitNode  bool           `json:"exit_node,omitempty"`
 	Exit      bool           `json:"exit,omitempty"`
 	DNS       []netip.Addr   `json:"dns,omitempty"`
-	Zone      string         `json:"zone,omitempty"` // names: NAME.<zone>
+	Zone      string         `json:"zone,omitempty"`           // names: NAME.<zone>
+	Version   int64          `json:"config_version,omitempty"` // signed room config in use
 	Peers     []Peer         `json:"peers"`
 }
 
