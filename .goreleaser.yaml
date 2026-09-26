@@ -30,6 +30,27 @@ builds:
     ldflags: ["-s -w -X main.version={{ .Version }}"]
     mod_timestamp: "{{ .CommitTimestamp }}"
 
+  # Трей: Windows (без окна консоли) и Linux (StatusNotifierItem через DBus).
+  - id: zpt-tray-linux
+    main: ./cmd/zpt-tray
+    binary: zpt-tray
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.version={{ .Version }}"]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+  - id: zpt-tray-windows
+    main: ./cmd/zpt-tray
+    binary: zpt-tray
+    env: [CGO_ENABLED=0]
+    goos: [windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w -H windowsgui -X main.version={{ .Version }}"]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
   - id: zpt-controller
     main: ./cmd/zpt-controller
     binary: zpt-controller
@@ -43,7 +64,7 @@ builds:
 archives:
   # Узел: MPL-2.0.
   - id: zpt-linux
-    ids: [zpt-linux]
+    ids: [zpt-linux, zpt-tray-linux]
     name_template: "zpt_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats: [tar.gz]
     files:
@@ -55,7 +76,7 @@ archives:
       - deploy/examples/zpt.yaml
 
   - id: zpt-windows
-    ids: [zpt-windows]
+    ids: [zpt-windows, zpt-tray-windows]
     name_template: "zpt_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats: [zip]
     files:
@@ -89,7 +110,7 @@ archives:
 # конфиг /etc/zeropentime/zpt.yaml, обработчик ссылок zpt://.
 nfpms:
   - id: zpt
-    ids: [zpt-linux]
+    ids: [zpt-linux, zpt-tray-linux]
     package_name: zeropentime
     file_name_template: "zeropentime_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     vendor: zeropentime
@@ -107,6 +128,10 @@ nfpms:
         dst: /usr/lib/systemd/system/zpt.service
       - src: deploy/packaging/linux/zpt-open.desktop
         dst: /usr/share/applications/zpt-open.desktop
+      - src: deploy/packaging/linux/zpt-tray.desktop
+        dst: /usr/share/applications/zpt-tray.desktop
+      - src: deploy/packaging/linux/zpt-tray.desktop
+        dst: /etc/xdg/autostart/zpt-tray.desktop
       - src: deploy/packaging/zpt.yaml
         dst: /etc/zeropentime/zpt.yaml
         type: config|noreplace
@@ -129,9 +154,9 @@ checksum:
   name_template: checksums.txt
   algorithm: sha256
 
-# Заметки к релизу берутся из CHANGELOG.md (scripts/release-notes.sh).
-changelog:
-  disable: true
+# Заметки к релизу берутся из CHANGELOG.md (scripts/release-notes.sh,
+# флаг --release-notes); свой журнал goreleaser не собирает. Выключать
+# changelog нельзя: тогда пустым остаётся и текст релиза.
 
 release:
   github:

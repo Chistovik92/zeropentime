@@ -7,7 +7,8 @@
       автозапуск, перезапуск при сбое;
     - конфиг ProgramData\zeropentime\zpt.yaml (не перезаписывается при
       обновлении и остаётся после удаления вместе с ключом и состоянием);
-    - обработчик ссылок zpt:// ("zpt open").
+    - обработчик ссылок zpt:// ("zpt open");
+    - трей zpt-tray.exe: автозапуск при входе любого пользователя, ярлык в «Пуске».
   Сборка: scripts/build-msi.ps1.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
@@ -46,6 +47,12 @@
             </RegistryKey>
           </RegistryKey>
         </Component>
+        <Component Id="Tray">
+          <File Id="TrayExe" Source="$(BinDir)\zpt-tray.exe" KeyPath="yes" />
+          <!-- The tray starts with every user's session. -->
+          <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Run" Name="zeropentime"
+                         Type="string" Value="&quot;[INSTALLFOLDER]zpt-tray.exe&quot;" />
+        </Component>
         <Component Id="Wintun">
           <File Id="WintunDll" Source="$(BinDir)\wintun.dll" KeyPath="yes" />
           <File Id="WintunLicense" Source="$(BinDir)\wintun-LICENSE.txt" />
@@ -65,6 +72,14 @@
       </Directory>
     </StandardDirectory>
 
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="Shortcut">
+        <Shortcut Id="TrayShortcut" Name="zeropentime" Description="Комнаты zeropentime в области уведомлений"
+                  Target="[INSTALLFOLDER]zpt-tray.exe" WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKLM" Key="Software\zeropentime" Name="shortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
     <StandardDirectory Id="CommonAppDataFolder">
       <Directory Id="DATAFOLDER" Name="zeropentime">
         <Component Id="Config" NeverOverwrite="yes" Permanent="yes">
@@ -75,6 +90,8 @@
 
     <Feature Id="Main" Title="zeropentime">
       <ComponentRef Id="Node" />
+      <ComponentRef Id="Tray" />
+      <ComponentRef Id="Shortcut" />
       <ComponentRef Id="Wintun" />
       <ComponentRef Id="License" />
       <ComponentRef Id="Licensing" />

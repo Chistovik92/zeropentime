@@ -4,7 +4,9 @@
 // and the zpt command: status, peers, and "apply the new choice now".
 //
 // It is HTTP with JSON over a Unix socket (Linux, macOS) or a named pipe
-// (Windows), reachable only by root / administrators and the system.
+// (Windows), reachable only by root / administrators and the system. A
+// second channel answers only "status" and is open to local users (the
+// tray runs without administrator rights).
 package control
 
 import (
@@ -36,6 +38,14 @@ type Status struct {
 	KillSwitch  bool               `json:"kill_switch"`
 	DNS         []netip.Addr       `json:"dns,omitempty"`
 	DNSRoom     string             `json:"dns_room,omitempty"`
+	// Off are rooms turned off on this machine ("zpt room off").
+	Off []OffRoom `json:"off,omitempty"`
+}
+
+// OffRoom is a room this node is a member of but keeps down.
+type OffRoom struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // ControllerStatus is one followed controller.
@@ -75,16 +85,18 @@ type Room struct {
 
 // Peer is one peer of a room.
 type Peer struct {
-	Name          string         `json:"name"`
-	NodeID        string         `json:"node_id,omitempty"`
-	IP            netip.Addr     `json:"ip"`
-	AllowedIPs    []netip.Prefix `json:"allowed_ips"`
-	Endpoint      string         `json:"endpoint,omitempty"`
-	Path          string         `json:"path"` // "direct", "relay" or "none"
-	RTT           time.Duration  `json:"rtt,omitempty"`
-	LastHandshake time.Time      `json:"last_handshake,omitzero"`
-	RxBytes       uint64         `json:"rx_bytes"`
-	TxBytes       uint64         `json:"tx_bytes"`
+	Name       string         `json:"name"`
+	NodeID     string         `json:"node_id,omitempty"`
+	IP         netip.Addr     `json:"ip"`
+	AllowedIPs []netip.Prefix `json:"allowed_ips"`
+	Endpoint   string         `json:"endpoint,omitempty"`
+	Path       string         `json:"path"` // "direct", "relay" or "none"
+	// ExitOffered: a room admin approved this member as an exit.
+	ExitOffered   bool          `json:"exit_offered,omitempty"`
+	RTT           time.Duration `json:"rtt,omitempty"`
+	LastHandshake time.Time     `json:"last_handshake,omitzero"`
+	RxBytes       uint64        `json:"rx_bytes"`
+	TxBytes       uint64        `json:"tx_bytes"`
 }
 
 // Node is what the server needs from a running node.
@@ -113,9 +125,19 @@ func Serve(ctx context.Context, n Node) error {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	smux := http.NewServeMux()
+	smux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(n.Status())
+	})
+	ssrv := &http.Server{Handler: smux, ReadHeaderTimeout: 5 * time.Second}
+	if sln, err := listenStatus(); err == nil {
+		go ssrv.Serve(sln)
+	}
 	go func() {
 		<-ctx.Done()
 		srv.Close()
+		ssrv.Close()
 	}()
 	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
@@ -124,24 +146,35 @@ func Serve(ctx context.Context, n Node) error {
 }
 
 // Client talks to the running node.
-type Client struct{ http *http.Client }
+type Client struct{ http, status *http.Client }
 
 // NewClient returns a client of the local node.
 func NewClient() *Client {
-	return &Client{http: &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return dial(ctx)
-		}},
-	}}
+	mk := func(dial func(context.Context) (net.Conn, error)) *http.Client {
+		return &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return dial(ctx)
+			}},
+		}
+	}
+	return &Client{http: mk(dial), status: mk(dialStatus)}
 }
 
 func (c *Client) do(method, path string, out any) error {
 	req, _ := http.NewRequest(method, "http://zpt"+path, nil)
 	resp, err := c.http.Do(req)
+	if err != nil && errors.Is(err, errNoAccess) && method == "GET" && path == "/status" {
+		// Without administrator rights: the read-only channel.
+		req, _ = http.NewRequest(method, "http://zpt"+path, nil)
+		resp, err = c.status.Do(req)
+	}
 	if err != nil {
 		if errors.Is(err, errNoNode) || isNoNode(err) {
 			return ErrNotRunning
+		}
+		if errors.Is(err, errNoAccess) {
+			return errors.New(noAccessHint)
 		}
 		return err
 	}
@@ -168,7 +201,10 @@ func (c *Client) Status() (*Status, error) {
 // Reload makes the running node apply the state file now.
 func (c *Client) Reload() error { return c.do("POST", "/reload", nil) }
 
-var errNoNode = errors.New("no node")
+var (
+	errNoNode   = errors.New("no node")
+	errNoAccess = errors.New("no access")
+)
 
 func envOr(name, def string) string {
 	if v := os.Getenv(name); v != "" {

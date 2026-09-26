@@ -125,6 +125,8 @@ type Room struct {
 	// PeerNodes maps peer keys to node IDs; ExitPeer is the exit's node ID.
 	PeerNodes map[identity.Key]string `yaml:"-"`
 	ExitPeer  string                  `yaml:"-"`
+	// ExitPeers are the node IDs of members approved as exits (to pick).
+	ExitPeers map[string]bool `yaml:"-"`
 }
 
 // Obfuscation overrides AmneziaWG parameters that may differ between members

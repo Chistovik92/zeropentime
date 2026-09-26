@@ -333,6 +333,7 @@ func (n *Node) supervise(ctx context.Context) {
 			if st.DNS != nil {
 				pins += fmt.Sprintf("%+v", *st.DNS)
 			}
+			pins += fmt.Sprint(st.Off)
 			n.syncLocal(st)
 			if pins != prevPins {
 				prevPins = pins
@@ -512,6 +513,9 @@ func (n *Node) apply(url string, nm *api.NetMap) {
 		if !pinned {
 			continue // not joined from this machine (or left)
 		}
+		if st.IsOff(rs.RoomID) {
+			continue // turned off on this machine ("zpt room off")
+		}
 		if rs.Status == "active" && rs.Config == nil && strings.HasPrefix(url, localPrefix) {
 			// A local room we were just accepted into: it runs with the
 			// owner as the only peer until the signed config arrives.
@@ -659,6 +663,12 @@ func (n *Node) roomFromConfig(url, keyStr string, rs api.RoomState, nm *api.NetM
 			rc.PeerNodes = map[identity.Key]string{}
 		}
 		rc.PeerNodes[m.WGKey] = m.NodeID
+		if m.Exit {
+			if rc.ExitPeers == nil {
+				rc.ExitPeers = map[string]bool{}
+			}
+			rc.ExitPeers[m.NodeID] = true
+		}
 		if m.NodeID == exitID {
 			allowed = append(allowed, netip.PrefixFrom(netip.IPv4Unspecified(), 0))
 			rc.Exit, rc.ExitPeer = true, m.NodeID

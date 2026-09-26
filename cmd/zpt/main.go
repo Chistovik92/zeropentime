@@ -60,13 +60,14 @@ const usage = `zpt — zeropentime: децентрализованные вир�
   zpt logs    [-f] [-n 50]                  журнал службы (-f — следить)
   zpt pubkey  -c КОНФИГ                     публичные ключи узла в статических комнатах
   zpt room new                              секрет статической комнаты (без контроллера)
+  zpt room off|on КОМНАТА                   выключить комнату на этом устройстве / включить обратно
+  zpt open ССЫЛКА                           вступить по ссылке с подтверждением (обработчик zpt://)
 
 Комнаты без контроллера (владелец — этот узел):
   zpt room create -local -name ИМЯ [-me ВАШЕ_ИМЯ] [-subnet 10.100.7.0/24]
   zpt room invite КОМНАТА [-uses 1] [-hours 24] [-endpoint host:port]   ссылка для zpt join
   zpt room list | zpt room members КОМНАТА | zpt room kick КОМНАТА УЧАСТНИК
   zpt room admin КОМНАТА УЧАСТНИК           сделать участника со-админом (получит ключ подписи)
-  zpt open ССЫЛКА                           вступить по ссылке с подтверждением (обработчик zpt://)
 
   zpt version
 
@@ -183,6 +184,9 @@ func loadOrCreateKey(path string) (*identity.Identity, bool, error) {
 }
 
 func cmdRoom(args []string) error {
+	if len(args) > 0 && (args[0] == "off" || args[0] == "on") {
+		return cmdRoomToggle(args[0] == "off", args[1:])
+	}
 	if len(args) > 0 && args[0] != "new" {
 		return cmdRoomLocal(args[0], args[1:])
 	}

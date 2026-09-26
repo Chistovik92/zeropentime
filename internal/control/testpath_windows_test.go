@@ -5,6 +5,7 @@ package control
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,9 +15,10 @@ import (
 func useTempChannel(t *testing.T) {
 	old := PipePath
 	PipePath = fmt.Sprintf(`\\.\pipe\zeropentime-test-%d`, time.Now().UnixNano())
-	oldSD := pipeSDDL
+	oldSD, oldStatus := pipeSDDL, statusSDDL
 	pipeSDDL = "D:P(A;;GA;;;WD)" // tests may run without administrator rights
-	t.Cleanup(func() { PipePath, pipeSDDL = old, oldSD })
+	statusSDDL = pipeSDDL
+	t.Cleanup(func() { PipePath, pipeSDDL, statusSDDL = old, oldSD, oldStatus })
 }
 
 // The real ACL (owner: administrators) must work for an elevated node.
@@ -42,4 +44,14 @@ func TestProductionPipeACL(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.Close()
+}
+
+func TestStatusPipeSDDL(t *testing.T) {
+	sd, err := windows.SecurityDescriptorFromString(statusSDDL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := sd.String(); !strings.Contains(s, ";;;IU)") || strings.Contains(s, ";;;WD)") {
+		t.Fatalf("status pipe must be open to interactive users only: %s", s)
+	}
 }

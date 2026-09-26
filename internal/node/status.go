@@ -48,6 +48,11 @@ func (n *Node) Status() control.Status {
 	s := control.Status{
 		NodeID: n.ID.NodeID(), Version: n.opts.Version, Started: n.started, UDPPort: n.sock.Port(),
 	}
+	if st, err := LoadState(n.opts.StatePath); err == nil {
+		for _, o := range st.Off {
+			s.Off = append(s.Off, control.OffRoom{ID: o.ID, Name: o.Name})
+		}
+	}
 	n.relayMu.Lock()
 	if n.relay != nil {
 		s.Relay, s.RelayReady = n.relayAddr, n.relay.Ready()
@@ -119,7 +124,7 @@ func (n *Node) Status() control.Status {
 				}
 			}
 			if id := cfg.PeerNodes[p.PublicKey]; id != "" {
-				cp.NodeID = id
+				cp.NodeID, cp.ExitOffered = id, cfg.ExitPeers[id]
 				if exit && cfg.ExitPeer == id {
 					s.Exit.Member = p.Name
 				}

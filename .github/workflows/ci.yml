@@ -116,6 +116,9 @@ jobs:
           sudo zpt status
           test "$(sudo stat -c %a /etc/zeropentime)" = 700
           desktop-file-validate /usr/share/applications/zpt-open.desktop
+          desktop-file-validate /etc/xdg/autostart/zpt-tray.desktop
+          zpt-tray version
+          zpt status   # без root: канал только для чтения
           grep -q "x-scheme-handler/zpt" /usr/share/applications/zpt-open.desktop
           ! echo | zpt open "zpt://nope"
           sudo apt-get remove -y zeropentime
@@ -158,6 +161,10 @@ jobs:
           for ($i = 0; $i -lt 20; $i++) { & $exe status; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep 1 }
           if ($LASTEXITCODE -ne 0) { throw "zpt status" }
           if (-not (Test-Path "C:\Program Files\zeropentime\wintun.dll")) { throw "нет wintun.dll" }
+          & "C:\Program Files\zeropentime\zpt-tray.exe" version | Out-Host
+          $run = (Get-ItemProperty "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run").zeropentime
+          if ($run -notlike '*zpt-tray.exe"') { throw "автозапуск трея: $run" }
+          if (-not (Test-Path "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\zeropentime.lnk")) { throw "нет ярлыка" }
           if (-not (Test-Path "C:\ProgramData\zeropentime\zpt.yaml")) { throw "нет конфига" }
           $cmd = (Get-ItemProperty "HKLM:\Software\Classes\zpt\shell\open\command").'(default)'
           if ($cmd -notlike '*zpt.exe" open "%1"') { throw "обработчик ссылок: $cmd" }

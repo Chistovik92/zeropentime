@@ -3,6 +3,7 @@ module github.com/Chistovik92/zeropentime
 go 1.26.2
 
 require (
+	fyne.io/systray v1.12.2
 	github.com/amnezia-vpn/amneziawg-go v0.2.20-0.20260724121833-457d920a1a7d
 	github.com/huin/goupnp v1.3.0
 	github.com/jackpal/gateway v1.2.0
@@ -24,6 +25,7 @@ require (
 	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/juju/ratelimit v1.0.2 // indirect

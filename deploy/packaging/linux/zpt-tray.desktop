@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=zeropentime
+Comment=Комнаты, адреса участников и выход в интернет zeropentime
+Exec=/usr/bin/zpt-tray
+Terminal=false
+Categories=Network;
+X-GNOME-Autostart-enabled=true

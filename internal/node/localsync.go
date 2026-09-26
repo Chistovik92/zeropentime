@@ -77,7 +77,7 @@ func (n *Node) syncLocal(st *State) {
 		switch {
 		case lr.Config != nil:
 			nm := localNetmap(lr)
-			key := fmt.Sprintf("%x %v", lr.Config.Sig, nm.Peers)
+			key := fmt.Sprintf("%x %v %v", lr.Config.Sig, nm.Peers, st.IsOff(lr.RoomID))
 			n.mu.Lock()
 			same := n.localApplied[url] == key
 			n.localApplied[url] = key

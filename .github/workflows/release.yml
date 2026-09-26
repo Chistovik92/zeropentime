@@ -61,6 +61,7 @@ jobs:
           $v = "$env:GITHUB_REF_NAME".TrimStart("v")
           ./scripts/build-msi.ps1 -Version $v -Arch amd64 -Out msi
           ./scripts/build-msi.ps1 -Version $v -Arch arm64 -Out msi
+          Remove-Item msi\*.wixpdb -ErrorAction SilentlyContinue
           Get-ChildItem msi\*.msi | ForEach-Object { "$((Get-FileHash $_ -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } | Set-Content -Encoding ascii msi\checksums-msi.txt
           gh release upload "$env:GITHUB_REF_NAME" (Get-ChildItem msi\*).FullName --clobber
 

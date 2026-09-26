@@ -18,6 +18,8 @@ New-Item -ItemType Directory -Force $bin, $Out | Out-Null
 $env:GOOS = "windows"; $env:GOARCH = $Arch; $env:CGO_ENABLED = "0"
 go build -trimpath -ldflags "-s -w -X main.version=$Version" -o "$bin\zpt.exe" "$src\cmd\zpt"
 if ($LASTEXITCODE -ne 0) { throw "go build" }
+go build -trimpath -ldflags "-s -w -H windowsgui -X main.version=$Version" -o "$bin\zpt-tray.exe" "$src\cmd\zpt-tray"
+if ($LASTEXITCODE -ne 0) { throw "go build zpt-tray" }
 Remove-Item Env:GOOS, Env:GOARCH
 
 Copy-Item "$src\third_party\wintun\bin\$Arch\wintun.dll" "$bin\wintun.dll"

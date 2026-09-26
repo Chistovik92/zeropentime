@@ -25,6 +25,39 @@ type State struct {
 	DNS *DNSChoice `json:"dns,omitempty"`
 	// Local are rooms without a controller (see local.go).
 	Local []LocalRoom `json:"local,omitempty"`
+	// Off are rooms turned off on this machine ("zpt room off"): the node
+	// stays a member but does not bring them up.
+	Off []OffRoom `json:"off,omitempty"`
+}
+
+// OffRoom is a room turned off with "zpt room off".
+type OffRoom struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// IsOff reports whether a room is turned off on this machine.
+func (s *State) IsOff(roomID string) bool {
+	for _, o := range s.Off {
+		if o.ID == roomID {
+			return true
+		}
+	}
+	return false
+}
+
+// SetOff turns a room off (on == false) or back on.
+func (s *State) SetOff(roomID, name string, off bool) {
+	var keep []OffRoom
+	for _, o := range s.Off {
+		if o.ID != roomID {
+			keep = append(keep, o)
+		}
+	}
+	if off {
+		keep = append(keep, OffRoom{ID: roomID, Name: name})
+	}
+	s.Off = keep
 }
 
 // DNSChoice is set with "zpt dns".

@@ -9,3 +9,5 @@ state.json
 wintun.dll
 .claude/
 third_party/
+/zpt-tray
+/zpt-tray.exe

@@ -1229,3 +1229,40 @@ func TestLocalRoomCoAdmin(t *testing.T) {
 		t.Fatalf("a plain member got an answer to KEY: %q", b)
 	}
 }
+
+// 0.6.1: a room turned off on one machine goes down there (the member
+// stays in it) and comes back when turned on; the status lists it.
+func TestRoomOff(t *testing.T) {
+	e := newEnv(t)
+	room := e.room("game", "auto")
+	a, b := e.node("a"), e.node("b")
+	e.mustJoin(a, e.invite(room.ID, 0, false), "alice", "active")
+	e.mustJoin(b, e.invite(room.ID, 0, false), "bob", "active")
+	eventually(t, 15*time.Second, "room up", hasRoom(a, "game", 1))
+
+	setOff := func(off bool) {
+		st, err := node.LoadState(a.state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		st.SetOff(room.ID, "game", off)
+		if err := st.Save(a.state); err != nil {
+			t.Fatal(err)
+		}
+		a.node.Reload()
+	}
+	setOff(true)
+	eventually(t, 10*time.Second, "room down", func() error {
+		if _, err := a.node.Room("game"); err == nil {
+			return errors.New("still up")
+		}
+		return nil
+	})
+	if s := a.node.Status(); len(s.Off) != 1 || s.Off[0].ID != room.ID || len(s.Rooms) != 0 {
+		t.Fatalf("status: off %+v rooms %+v", s.Off, s.Rooms)
+	}
+	setOff(false)
+	eventually(t, 15*time.Second, "room back", hasRoom(a, "game", 1))
+	srv := serveEcho(t, b, "game")
+	eventually(t, 15*time.Second, "alice talks to bob", func() error { return talk(a, "game", srv, 3*time.Second) })
+}

@@ -48,3 +48,36 @@ func TestServeAndClient(t *testing.T) {
 		t.Fatal("reload not delivered")
 	}
 }
+
+// The read-only channel answers the status and nothing else.
+func TestStatusChannel(t *testing.T) {
+	useTempChannel(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	n := &fakeNode{reloads: make(chan struct{}, 1)}
+	go Serve(ctx, n)
+	c := NewClient()
+	var err error
+	for range 50 {
+		if _, err = c.Status(); err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	ro := &Client{http: c.status, status: c.status}
+	s, err := ro.Status()
+	if err != nil || s.NodeID != "node1" {
+		t.Fatalf("status channel: %+v, %v", s, err)
+	}
+	if err := ro.Reload(); err == nil {
+		t.Fatal("reload accepted on the status channel")
+	}
+	select {
+	case <-n.reloads:
+		t.Fatal("node reloaded through the status channel")
+	default:
+	}
+}

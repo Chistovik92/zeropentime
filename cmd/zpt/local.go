@@ -321,3 +321,70 @@ func joinLocal(l *localCtx, raw, name string) error {
 	fmt.Println("проверить: zpt room list")
 	return nil
 }
+
+// cmdRoomToggle is "zpt room off|on КОМНАТА": keep the membership but take
+// the room down on this machine (or bring it back).
+func cmdRoomToggle(off bool, args []string) error {
+	action := "on"
+	if off {
+		action = "off"
+	}
+	fl := flag.NewFlagSet("room "+action, flag.ExitOnError)
+	cfgPath, explicit := configFlag(fl)
+	fl.Parse(args)
+	if fl.NArg() != 1 {
+		return fmt.Errorf("использование: zpt room %s КОМНАТА", action)
+	}
+	ref := fl.Arg(0)
+	l, err := openLocal(fl, cfgPath, explicit)
+	if err != nil {
+		return err
+	}
+	id, name := "", ""
+	match := func(i, n string) {
+		if id == "" && (i == ref || strings.EqualFold(n, ref)) {
+			id, name = i, n
+		}
+	}
+	for _, o := range l.st.Off {
+		match(o.ID, o.Name)
+	}
+	if s, err := control.NewClient().Status(); err == nil {
+		for _, r := range s.Rooms {
+			if r.ID != "" {
+				match(r.ID, r.Name)
+			}
+		}
+	}
+	for _, lr := range l.st.Local {
+		match(lr.RoomID, lr.Name)
+	}
+	if id == "" {
+		for _, c := range l.st.Controllers {
+			if _, ok := c.Rooms[ref]; ok {
+				id, name = ref, ref
+			}
+		}
+	}
+	if id == "" {
+		return fmt.Errorf("нет комнаты %q (zpt rooms; статические комнаты выключаются в конфиге)", ref)
+	}
+	if l.st.IsOff(id) == off {
+		if off {
+			fmt.Println("комната уже выключена:", name)
+		} else {
+			fmt.Println("комната уже включена:", name)
+		}
+		return nil
+	}
+	l.st.SetOff(id, name, off)
+	if err := l.save(); err != nil {
+		return err
+	}
+	if off {
+		fmt.Printf("комната %s выключена на этом устройстве (вы остаётесь участником); включить: zpt room on %s\n", name, name)
+	} else {
+		fmt.Printf("комната %s включена\n", name)
+	}
+	return nil
+}
