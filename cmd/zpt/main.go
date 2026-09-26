@@ -30,7 +30,7 @@ import (
 	"github.com/Chistovik92/zeropentime/internal/room"
 )
 
-var version = "0.3.6-dev"
+var version = "0.4.0-dev"
 
 const usage = `zpt — zeropentime: децентрализованные виртуальные LAN на AmneziaWG
 
