@@ -109,6 +109,10 @@ type Room struct {
 	ExitDNS netip.Addr `yaml:"-"`
 	// RoomDNS are the room's own DNS servers (set by a room admin).
 	RoomDNS []netip.Addr `yaml:"-"`
+	// ZoneName ("room.zpt") and ZoneRecords (member label -> address) are
+	// the room's DNS names.
+	ZoneName    string                `yaml:"-"`
+	ZoneRecords map[string]netip.Addr `yaml:"-"`
 	// PeerNodes maps peer keys to node IDs; ExitPeer is the exit's node ID.
 	PeerNodes map[identity.Key]string `yaml:"-"`
 	ExitPeer  string                  `yaml:"-"`

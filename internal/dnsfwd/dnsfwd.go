@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
-// Package dnsfwd is the DNS forwarder of an exit node: members that send
-// their internet traffic through the exit also resolve names there, so
-// their queries neither leak to the local network nor reveal it.
-//
-// It relays raw DNS messages over UDP and TCP to the exit's own resolvers
-// and understands nothing but the message length and ID.
+// Package dnsfwd is a node's DNS server on its address in a room. It
+// answers the room's names (name.room.zpt) itself and relays other queries
+// as raw messages over UDP and TCP to upstream resolvers: the exit's own
+// resolvers for members that go through this exit, the DNS servers this
+// machine chose for itself. Anything else is refused: a room member is not
+// an open resolver for the others.
 package dnsfwd
 
 import (
@@ -20,8 +20,16 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+func remoteAddr(c net.Conn) netip.Addr {
+	if a, ok := c.RemoteAddr().(*net.TCPAddr); ok {
+		return a.AddrPort().Addr().Unmap()
+	}
+	return netip.Addr{}
+}
 
 const (
 	queryTimeout = 5 * time.Second
@@ -30,7 +38,8 @@ const (
 
 // Forwarder answers DNS queries on one address.
 type Forwarder struct {
-	upstreams func() []netip.AddrPort
+	upstreams func(src netip.Addr) []netip.AddrPort
+	zone      atomic.Pointer[Zone]
 	log       *slog.Logger
 	udp       *net.UDPConn
 	tcp       *net.TCPListener
@@ -39,8 +48,9 @@ type Forwarder struct {
 	once      sync.Once
 }
 
-// Listen starts a forwarder on addr (port 53 in production; 0 picks one).
-func Listen(addr netip.AddrPort, upstreams func() []netip.AddrPort, log *slog.Logger) (*Forwarder, error) {
+// Listen starts a server on addr (port 53 in production; 0 picks one).
+// upstreams gives the resolvers for a query from src (none: refused).
+func Listen(addr netip.AddrPort, upstreams func(src netip.Addr) []netip.AddrPort, log *slog.Logger) (*Forwarder, error) {
 	u, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(addr))
 	if err != nil {
 		return nil, err
@@ -57,6 +67,9 @@ func Listen(addr netip.AddrPort, upstreams func() []netip.AddrPort, log *slog.Lo
 	go f.serveTCP()
 	return f, nil
 }
+
+// SetZone sets the names this server answers itself (nil: none).
+func (f *Forwarder) SetZone(z *Zone) { f.zone.Store(z) }
 
 // Addr is where the forwarder listens (UDP and TCP).
 func (f *Forwarder) Addr() netip.AddrPort { return f.udp.LocalAddr().(*net.UDPAddr).AddrPort() }
@@ -93,7 +106,7 @@ func (f *Forwarder) serveUDP() {
 		f.wg.Add(1)
 		go func() {
 			defer func() { <-f.sem; f.wg.Done() }()
-			if resp, err := f.exchange(q, "udp"); err == nil {
+			if resp, err := f.exchange(q, "udp", src.Addr().Unmap()); err == nil {
 				f.udp.WriteToUDPAddrPort(resp, src)
 			}
 		}()
@@ -125,7 +138,7 @@ func (f *Forwarder) serveTCP() {
 				if err != nil {
 					return
 				}
-				resp, err := f.exchange(q, "tcp")
+				resp, err := f.exchange(q, "tcp", remoteAddr(c))
 				if err != nil || writeMsg(c, resp) != nil {
 					return
 				}
@@ -136,9 +149,16 @@ func (f *Forwarder) serveTCP() {
 
 // exchange asks the upstreams in turn. A truncated UDP answer is passed
 // on as is: the client repeats the query over TCP.
-func (f *Forwarder) exchange(q []byte, network string) ([]byte, error) {
+func (f *Forwarder) exchange(q []byte, network string, src netip.Addr) ([]byte, error) {
+	if resp, ok := answerZone(q, f.zone.Load()); ok {
+		return resp, nil
+	}
+	ups := f.upstreams(src)
+	if len(ups) == 0 {
+		return refused(q), nil
+	}
 	last := errors.New("dnsfwd: no upstream resolvers")
-	for _, up := range f.upstreams() {
+	for _, up := range ups {
 		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 		resp, err := exchangeOne(ctx, network, up, q)
 		cancel()

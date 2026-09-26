@@ -95,7 +95,7 @@ func (n *Node) Status() control.Status {
 		exit, dns := r.room.Exit()
 		cr := control.Room{
 			Name: cfg.Name, Interface: r.room.Ifname(), Address: cfg.Address, Broadcast: cfg.Broadcast,
-			Routes: cfg.Routes, Routing: cfg.Routing, ExitNode: cfg.ExitNode, Exit: exit, DNS: dns,
+			Routes: cfg.Routes, Routing: cfg.Routing, ExitNode: cfg.ExitNode, Exit: exit, DNS: dns, Zone: r.room.Zone(),
 		}
 		if r.controller != "" {
 			cr.ID = ref.key

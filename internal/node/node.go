@@ -25,6 +25,7 @@ import (
 	"github.com/Chistovik92/zeropentime/internal/client"
 	"github.com/Chistovik92/zeropentime/internal/config"
 	"github.com/Chistovik92/zeropentime/internal/disco"
+	"github.com/Chistovik92/zeropentime/internal/dnsfwd"
 	"github.com/Chistovik92/zeropentime/internal/identity"
 	"github.com/Chistovik92/zeropentime/internal/magicsock"
 	"github.com/Chistovik92/zeropentime/internal/netcheck"
@@ -132,6 +133,9 @@ func Start(o Options) (_ *Node, err error) {
 	n.log.Info("node starting", "node_id", n.ID.NodeID(), "udp_port", sock.Port(), "static_rooms", len(o.Config.Rooms))
 
 	for _, rc := range o.Config.Rooms {
+		if dnsfwd.Label(rc.Name) != "" {
+			staticZone(&rc)
+		}
 		n.mu.Lock()
 		err := n.startLocked("static:"+rc.Name, "", rc)
 		n.mu.Unlock()
@@ -247,6 +251,7 @@ func (n *Node) startLocked(key, controller string, rc config.Room) error {
 	r.SetRoutes(rc.Routes)
 	r.SetRouter(rc.Routing, rc.ExitNode)
 	r.SetExit(rc.Exit)
+	r.SetZone(zoneOf(rc))
 	n.rooms[key] = &running{room: r, tagKey: prof.TagKey, controller: controller, cfg: rc}
 	return nil
 }
@@ -517,6 +522,7 @@ func (n *Node) apply(url string, nm *api.NetMap) {
 				cur.room.SetRoutes(rc.Routes)
 				cur.room.SetRouter(rc.Routing, rc.ExitNode)
 				cur.room.SetExit(rc.Exit)
+				cur.room.SetZone(zoneOf(rc))
 				cur.cfg = rc
 				continue
 			}
@@ -557,6 +563,14 @@ func (n *Node) roomFromConfig(url, keyStr string, rs api.RoomState, nm *api.NetM
 	me := n.ID.NodeID()
 	rc := &config.Room{Name: cfg.Name, Secret: cfg.Secret, MTU: config.DefaultMTU, Broadcast: cfg.Broadcast, RoomDNS: cfg.DNS}
 	exitID := n.exitPeerLocked(exit, rs, cfg)
+	rc.ZoneName, rc.ZoneRecords = n.zoneNameLocked(rs.RoomID, cfg.Name), map[string]netip.Addr{}
+	for _, m := range cfg.Members {
+		if l := dnsfwd.Label(m.Name); l != "" {
+			if _, dup := rc.ZoneRecords[l]; !dup {
+				rc.ZoneRecords[l] = m.IP
+			}
+		}
+	}
 	found := false
 	for _, m := range cfg.Members {
 		if m.NodeID == me {
@@ -700,6 +714,47 @@ func (n *Node) updateKillSwitchLocked(st *State) {
 		n.log.Info("kill switch off")
 	}
 	n.ksKey = key
+}
+
+// zoneNameLocked picks the DNS zone of a room: "label.zpt", with a piece
+// of the room ID added if another running room already uses that name.
+func (n *Node) zoneNameLocked(key, name string) string {
+	l := dnsfwd.Label(name)
+	if l == "" {
+		l = "room"
+	}
+	z := l + "." + dnsfwd.TLD
+	for k, r := range n.rooms {
+		if k != key && r.cfg.ZoneName == z {
+			id := strings.TrimPrefix(key, "static:")
+			if len(id) > 6 {
+				id = id[:6]
+			}
+			return l + "-" + dnsfwd.Label(id) + "." + dnsfwd.TLD
+		}
+	}
+	return z
+}
+
+// zoneOf is the DNS zone of a room config (nil if it has none).
+func zoneOf(rc config.Room) *dnsfwd.Zone {
+	if rc.ZoneName == "" {
+		return nil
+	}
+	return &dnsfwd.Zone{Name: rc.ZoneName, Records: rc.ZoneRecords}
+}
+
+// staticZone fills the DNS names of a static room from its peers.
+func staticZone(rc *config.Room) {
+	rc.ZoneName, rc.ZoneRecords = dnsfwd.Label(rc.Name)+"."+dnsfwd.TLD, map[string]netip.Addr{}
+	for _, p := range rc.Peers {
+		l := dnsfwd.Label(p.Name)
+		for _, a := range p.AllowedIPs {
+			if l != "" && a.Bits() == 32 && rc.ZoneRecords[l] == (netip.Addr{}) {
+				rc.ZoneRecords[l] = a.Addr()
+			}
+		}
+	}
 }
 
 // updateDNSLocked decides which DNS servers this machine uses and which

@@ -54,7 +54,7 @@ func TestForward(t *testing.T) {
 	up := fakeDNS(t)
 	// Nothing listens here over TCP: the forwarder moves on to the next upstream.
 	dead := netip.MustParseAddrPort("127.0.0.1:1")
-	f, err := Listen(netip.MustParseAddrPort("127.0.0.1:0"), func() []netip.AddrPort { return []netip.AddrPort{dead, up} }, slog.New(slog.DiscardHandler))
+	f, err := Listen(netip.MustParseAddrPort("127.0.0.1:0"), func(netip.Addr) []netip.AddrPort { return []netip.AddrPort{dead, up} }, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -126,7 +126,7 @@ func cmdStatus(args []string) error {
 
 func printRooms(s *control.Status) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "КОМНАТА\tИНТЕРФЕЙС\tАДРЕС\tПИРЫ\tОСОБОЕ")
+	fmt.Fprintln(w, "КОМНАТА\tИНТЕРФЕЙС\tАДРЕС\tИМЕНА\tПИРЫ\tОСОБОЕ")
 	for _, r := range s.Rooms {
 		online := 0
 		for _, p := range r.Peers {
@@ -150,7 +150,11 @@ func printRooms(s *control.Status) error {
 		if len(r.DNS) > 0 {
 			extra = append(extra, fmt.Sprintf("DNS %v", r.DNS))
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d из %d на связи\t%s\n", r.Name, r.Interface, r.Address, online, len(r.Peers), strings.Join(extra, "; "))
+		zone := "-"
+		if r.Zone != "" {
+			zone = "*." + r.Zone
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d из %d на связи\t%s\n", r.Name, r.Interface, r.Address, zone, online, len(r.Peers), strings.Join(extra, "; "))
 	}
 	return w.Flush()
 }

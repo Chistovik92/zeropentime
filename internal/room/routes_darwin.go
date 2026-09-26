@@ -31,6 +31,6 @@ func enableRouter(string, netip.Prefix, []netip.Prefix, bool, int, int) error { 
 func disableRouter(string)                                                    {}
 func enableExit(tun.Device, string) error                                     { return errNoExit }
 func disableExit(tun.Device, string)                                          {}
-func setDNS(tun.Device, string, []netip.Addr) error {
+func setDNS(tun.Device, string, netip.Addr, string, bool) error {
 	return errors.New("DNS settings are not supported on macOS yet")
 }

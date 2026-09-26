@@ -190,6 +190,35 @@ PY
   grep -q "^multicast mdns $ipA" "$WORK/bcast.out" || { log "ОШИБКА: multicast не дошёл"; FAILED=1; }
 }
 
+# dns_query NS SERVER NAME: the A record, "nxdomain", "refused" or "none".
+dns_query() {
+  ip netns exec "$1" python3 - "$2" "$3" <<'PY'
+import socket, struct, sys
+server, name = sys.argv[1], sys.argv[2]
+q = struct.pack(">HHHHHH", 0x7a70, 0x0100, 1, 0, 0, 0)
+for part in name.split("."):
+    q += bytes([len(part)]) + part.encode()
+q += bytes([0]) + struct.pack(">HH", 1, 1)
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(3)
+try:
+    s.sendto(q, (server, 53))
+    r = s.recv(512)
+except OSError:
+    print("none"); sys.exit()
+rcode = r[3] & 15
+ancount = struct.unpack(">H", r[6:8])[0]
+if rcode == 3:
+    print("nxdomain")
+elif rcode == 5:
+    print("refused")
+elif ancount and len(r) >= 4:
+    print(socket.inet_ntoa(r[-4:]))
+else:
+    print("empty")
+PY
+}
+
 want_nat() { case $1 in cone) echo cone ;; symmetric) echo symmetric ;; udp-blocked) echo udp-blocked ;; esac; }
 
 # path_seen NODE: how the node reaches its peer, from its log.
@@ -262,6 +291,13 @@ run_case() {
     zpt_on zhostA a peers >"$WORK/peers.txt" 2>&1 || true
     sed 's/^/[natlab-out] /' "$WORK/status.txt" "$WORK/peers.txt"
     log "zpt status: $(grep -c . "$WORK/status.txt") строк; комната: $(grep -o 'lab .*' "$WORK/status.txt" | head -1)"
+    # Room names: the room's DNS server on A's own room address answers
+    # b.lab.zpt; B's server answers names but refuses foreign queries.
+    local nameB other
+    nameB=$(dns_query zhostA "$ipA" b.lab.zpt)
+    other=$(dns_query zhostA "$ipB" example.com)
+    log "имена: b.lab.zpt → $nameB (ожидался $ipB), чужое имя у B → $other (ожидался отказ)"
+    { [ "$nameB" = "$ipB" ] && [ "$other" = refused ]; } || { log "ОШИБКА: DNS-имена комнаты"; FAILED=1; }
     if grep -q "контроллер:.*связь есть" "$WORK/status.txt" && grep -q '"path": "direct"' "$WORK/peers.json" && grep -q '"name": "b"' "$WORK/peers.json"; then
       log "zpt status и zpt peers показывают контроллер и прямую связь с B — верно"
     else

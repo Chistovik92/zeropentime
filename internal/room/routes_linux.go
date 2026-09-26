@@ -196,19 +196,27 @@ func delExitRules() {
 	}
 }
 
-// setDNS sends all DNS queries of the machine to the servers through
-// systemd-resolved (routing domain "~." on the room interface); no servers
-// revert the interface's DNS settings.
-func setDNS(_ tun.Device, ifname string, servers []netip.Addr) error {
-	if len(servers) == 0 {
+// setDNS points systemd-resolved at the room's DNS server (own, this
+// node's address in the room) for the room's zone and, when the room
+// carries this machine's DNS, for all names ("~."). An invalid own
+// reverts the interface's settings.
+func setDNS(_ tun.Device, ifname string, own netip.Addr, zone string, carrier bool) error {
+	if !own.IsValid() || zone == "" && !carrier {
 		exec.Command("resolvectl", "revert", ifname).Run()
 		return nil
 	}
-	dns := []string{"dns", ifname}
-	for _, a := range servers {
-		dns = append(dns, a.String())
+	domains := []string{"domain", ifname}
+	if zone != "" {
+		domains = append(domains, "~"+zone)
 	}
-	for _, args := range [][]string{dns, {"domain", ifname, "~."}, {"default-route", ifname, "yes"}} {
+	if carrier {
+		domains = append(domains, "~.")
+	}
+	route := "no"
+	if carrier {
+		route = "yes"
+	}
+	for _, args := range [][]string{{"dns", ifname, own.String()}, domains, {"default-route", ifname, route}} {
 		if out, err := exec.Command("resolvectl", args...).CombinedOutput(); err != nil {
 			exec.Command("resolvectl", "revert", ifname).Run()
 			return fmt.Errorf("resolvectl %s: %w: %s (is systemd-resolved running?)", strings.Join(args, " "), err, out)
