@@ -10,10 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -259,6 +262,7 @@ func (h *Server) routesPanel(mux *http.ServeMux) {
 	mux.Handle("GET /account", h.auth(h.accountPage))
 	mux.Handle("POST /account/password", h.auth(h.accountPassword))
 	mux.Handle("GET /audit", h.auth(h.auditPage))
+	mux.Handle("GET /backup", h.auth(h.backupDownload))
 }
 
 // ---- login ----
@@ -480,6 +484,32 @@ func (h *Server) accountPassword(w http.ResponseWriter, r *http.Request, u *stor
 	}
 	err := h.svc.ChangePassword(r.Context(), u, r.PostFormValue("old"), r.PostFormValue("new"))
 	back(w, r, "/account", err, "Пароль изменён")
+}
+
+// backupDownload sends a copy of the database (admins only).
+func (h *Server) backupDownload(w http.ResponseWriter, r *http.Request, u *store.User, _ string) {
+	dir, err := os.MkdirTemp("", "zpt-backup")
+	if err != nil {
+		back(w, r, "/audit", err, "")
+		return
+	}
+	defer os.RemoveAll(dir)
+	path := filepath.Join(dir, "backup.db")
+	if err := h.svc.Backup(r.Context(), u, path); err != nil {
+		back(w, r, "/audit", err, "")
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		back(w, r, "/audit", err, "")
+		return
+	}
+	defer f.Close()
+	name := "zpt-controller-" + time.Now().Format("2006-01-02-1504") + ".db"
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	w.Header().Set("Cache-Control", "no-store")
+	io.Copy(w, f)
 }
 
 func (h *Server) auditPage(w http.ResponseWriter, r *http.Request, u *store.User, csrf string) {

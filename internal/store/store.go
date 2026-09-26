@@ -5,6 +5,7 @@ package store
 
 import (
 	"context"
+	"crypto/cipher"
 	"database/sql"
 	_ "embed"
 	"encoding/json"
@@ -24,11 +25,21 @@ var ErrNotFound = errors.New("not found")
 
 // Store wraps the database.
 type Store struct {
-	db *sql.DB
+	db  *sql.DB
+	kek cipher.AEAD
+}
+
+// Options configure OpenOptions.
+type Options struct {
+	// KEK seals the secrets in the database (see kek.go); nil: plaintext.
+	KEK []byte
 }
 
 // Open opens (and creates or migrates) the database at path.
-func Open(path string) (*Store, error) {
+func Open(path string) (*Store, error) { return OpenOptions(path, Options{}) }
+
+// OpenOptions opens the database; with a KEK its secrets get sealed.
+func OpenOptions(path string, o Options) (*Store, error) {
 	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -44,7 +55,29 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	st := &Store{db: db}
+	if o.KEK != nil {
+		aead, err := newAEAD(o.KEK)
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+		st.kek = aead
+	}
+	err = st.Tx(context.Background(), func(tx *Tx) error {
+		if st.kek != nil {
+			return tx.sealAll()
+		}
+		if sealed, err := tx.Sealed(); err != nil || sealed {
+			return errors.Join(err, ErrNeedKEK)
+		}
+		return nil
+	})
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	return st, nil
 }
 
 // migrations upgrade the base schema (schema.sql, version 1). Entry i
@@ -112,13 +145,20 @@ func migrate(db *sql.DB) error {
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
 
+// Backup writes a consistent copy of the database to path (which must not
+// exist), also while the controller runs. Sealed secrets stay sealed.
+func (s *Store) Backup(ctx context.Context, path string) error {
+	_, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, path)
+	return err
+}
+
 // Tx runs fn in a transaction.
 func (s *Store) Tx(ctx context.Context, fn func(*Tx) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	if err := fn(&Tx{tx: tx}); err != nil {
+	if err := fn(&Tx{tx: tx, kek: s.kek}); err != nil {
 		tx.Rollback()
 		return err
 	}
@@ -126,7 +166,10 @@ func (s *Store) Tx(ctx context.Context, fn func(*Tx) error) error {
 }
 
 // Tx is a database transaction.
-type Tx struct{ tx *sql.Tx }
+type Tx struct {
+	tx  *sql.Tx
+	kek cipher.AEAD // nil: secrets stored as they are
+}
 
 // Read runs fn in a transaction that is always rolled back.
 func (s *Store) Read(ctx context.Context, fn func(*Tx) error) error {
@@ -135,7 +178,7 @@ func (s *Store) Read(ctx context.Context, fn func(*Tx) error) error {
 		return err
 	}
 	defer tx.Rollback()
-	return fn(&Tx{tx: tx})
+	return fn(&Tx{tx: tx, kek: s.kek})
 }
 
 func now() int64 { return time.Now().Unix() }
@@ -373,12 +416,18 @@ func (t *Tx) ShareActiveRoom(a, b string) (bool, error) {
 
 func (t *Tx) Setting(key string) ([]byte, error) {
 	var v []byte
-	err := t.tx.QueryRow(`SELECT value FROM settings WHERE key = ?`, key).Scan(&v)
-	return v, notFound(err)
+	if err := t.tx.QueryRow(`SELECT value FROM settings WHERE key = ?`, key).Scan(&v); err != nil {
+		return nil, notFound(err)
+	}
+	return t.open(v)
 }
 
 func (t *Tx) SetSetting(key string, value []byte) error {
-	_, err := t.tx.Exec(`INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	v, err := t.seal(value)
+	if err != nil {
+		return err
+	}
+	_, err = t.tx.Exec(`INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, v)
 	return err
 }
 
@@ -400,12 +449,34 @@ type Room struct {
 }
 
 func (t *Tx) CreateRoom(r *Room) error {
-	_, err := t.tx.Exec(`INSERT INTO rooms(id, name, subnet, secret, sign_key, owner_id, join_policy, version, created_at) VALUES(?,?,?,?,?,?,?,1,?)`,
-		r.ID, r.Name, r.Subnet.String(), r.Secret, r.SignKey, r.OwnerID, r.JoinPolicy, now())
+	secret, err := t.seal(r.Secret)
+	if err != nil {
+		return err
+	}
+	sign, err := t.seal(r.SignKey)
+	if err != nil {
+		return err
+	}
+	_, err = t.tx.Exec(`INSERT INTO rooms(id, name, subnet, secret, sign_key, owner_id, join_policy, version, created_at) VALUES(?,?,?,?,?,?,?,1,?)`,
+		r.ID, r.Name, r.Subnet.String(), secret, sign, r.OwnerID, r.JoinPolicy, now())
 	return err
 }
 
 const roomCols = `id, name, subnet, secret, sign_key, owner_id, join_policy, version, created_at, broadcast, dns, acl`
+
+// openRoom unseals a room's secrets.
+func (t *Tx) openRoom(r *Room, err error) (*Room, error) {
+	if err != nil {
+		return nil, err
+	}
+	if r.Secret, err = t.open(r.Secret); err != nil {
+		return nil, err
+	}
+	if r.SignKey, err = t.open(r.SignKey); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
 
 func scanRoom(row interface{ Scan(...any) error }) (*Room, error) {
 	var r Room
@@ -421,7 +492,7 @@ func scanRoom(row interface{ Scan(...any) error }) (*Room, error) {
 }
 
 func (t *Tx) RoomByID(id string) (*Room, error) {
-	return scanRoom(t.tx.QueryRow(`SELECT `+roomCols+` FROM rooms WHERE id = ?`, id))
+	return t.openRoom(scanRoom(t.tx.QueryRow(`SELECT `+roomCols+` FROM rooms WHERE id = ?`, id)))
 }
 
 // ListRooms returns rooms owned by ownerID, or all rooms if ownerID is 0.
@@ -433,7 +504,7 @@ func (t *Tx) ListRooms(ownerID int64) ([]Room, error) {
 	defer rows.Close()
 	var out []Room
 	for rows.Next() {
-		r, err := scanRoom(rows)
+		r, err := t.openRoom(scanRoom(rows))
 		if err != nil {
 			return nil, err
 		}

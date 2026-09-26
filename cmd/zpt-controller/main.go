@@ -67,7 +67,40 @@ func main() {
 func run(sub string, args []string) error {
 	fl := flag.NewFlagSet(sub, flag.ExitOnError)
 	db := fl.String("db", "zpt-controller.db", "файл базы данных")
+	kekFlag(fl)
 	switch sub {
+	case "kek":
+		if len(args) == 0 || args[0] != "init" {
+			return errors.New("использование: zpt-controller kek init -file ПУТЬ")
+		}
+		file := fl.String("file", "", "куда записать новый ключ")
+		fl.Parse(args[1:])
+		if *file == "" {
+			return errors.New("укажите -file")
+		}
+		if err := store.NewKEKFile(*file); err != nil {
+			return err
+		}
+		fmt.Println("ключ создан:", *file)
+		fmt.Println("запускайте контроллер с -kek-file", *file, "— при первом запуске секреты базы зашифруются.")
+		fmt.Println("Храните копию ключа отдельно от базы: без него база бесполезна.")
+		return nil
+	case "backup":
+		out := fl.String("out", "", "файл копии (не должен существовать)")
+		fl.Parse(args)
+		if *out == "" {
+			return errors.New("укажите -out")
+		}
+		svc, closeDB, err := openService(*db, slog.New(slog.DiscardHandler))
+		if err != nil {
+			return err
+		}
+		defer closeDB()
+		if err := svc.Backup(context.Background(), &store.User{IsAdmin: true, Login: "cli"}, *out); err != nil {
+			return err
+		}
+		fmt.Println("резервная копия:", *out)
+		return nil
 	case "serve":
 		listen := fl.String("listen", ":8080", "адрес HTTP(S)")
 		pub := fl.String("url", "", "внешний адрес контроллера для ссылок-приглашений, например https://zpt.example.org")
@@ -167,8 +200,23 @@ func splitList(s string) []string {
 	return out
 }
 
+// kekPath is the KEK file (-kek-file or ZPT_KEK_FILE; "" = none).
+var kekPath = os.Getenv("ZPT_KEK_FILE")
+
+func kekFlag(fl *flag.FlagSet) {
+	fl.StringVar(&kekPath, "kek-file", kekPath, "ключ шифрования секретов базы (или ZPT_KEK_FILE); создаётся командой kek init")
+}
+
 func openService(db string, log *slog.Logger) (*controller.Service, func(), error) {
-	st, err := store.Open(db)
+	var o store.Options
+	if kekPath != "" {
+		k, err := store.LoadKEK(kekPath)
+		if err != nil {
+			return nil, nil, err
+		}
+		o.KEK = k
+	}
+	st, err := store.OpenOptions(db, o)
 	if err != nil {
 		return nil, nil, err
 	}

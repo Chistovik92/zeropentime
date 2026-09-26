@@ -243,6 +243,7 @@ func runAdmin(sub string, args []string) error {
 	to := fl.String("to", "", "куда: участник или IP")
 	proto := fl.String("proto", "tcp", "протокол: tcp, udp или icmp")
 	port := fl.Int("port", 0, "порт")
+	kekFlag(fl)
 	fl.Parse(args)
 	svc, closeDB, err := openService(*db, slog.New(slog.DiscardHandler))
 	if err != nil {

@@ -235,6 +235,17 @@ func (s *Service) SetRoomDNS(ctx context.Context, u *store.User, roomID, servers
 	})
 }
 
+// Backup writes a consistent copy of the database to path (admins only).
+func (s *Service) Backup(ctx context.Context, u *store.User, path string) error {
+	if !u.IsAdmin {
+		return ErrForbidden
+	}
+	if err := s.st.Backup(ctx, path); err != nil {
+		return err
+	}
+	return s.st.Tx(ctx, func(tx *store.Tx) error { return tx.Audit(u.Login, "backup", "", "") })
+}
+
 // SetRoomACL sets the room's access rules (package acl text form; empty:
 // everything allowed). They are checked and kept as written, comments too.
 func (s *Service) SetRoomACL(ctx context.Context, u *store.User, roomID, text string) error {

@@ -1,6 +1,7 @@
 {{/* SPDX-License-Identifier: AGPL-3.0-only */}}
 {{define "content"}}
 <h1>Журнал действий</h1>
+{{if .User.IsAdmin}}<p><a href="/backup" download>Скачать резервную копию базы</a> <span class="muted small">— согласованная копия, пока контроллер работает; секреты в ней остаются зашифрованными, если задан ключ -kek-file.</span></p>{{end}}
 <section class="card">
   <table>
     <thead><tr><th>Время</th><th>Кто</th><th>Действие</th><th>Объект</th><th>Подробности</th></tr></thead>
