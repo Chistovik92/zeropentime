@@ -25,7 +25,7 @@ import (
 	"github.com/Chistovik92/zeropentime/internal/obfs"
 )
 
-var version = "0.3.2-dev"
+var version = "0.3.3-dev"
 
 const usage = `zpt — zeropentime: децентрализованные виртуальные LAN на AmneziaWG
 
