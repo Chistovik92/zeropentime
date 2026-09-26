@@ -34,7 +34,7 @@ func TestSealOpen(t *testing.T) {
 		t.Fatal("tag matches the wrong node")
 	}
 	from, got, err := Open(pkt, bPriv, bPub)
-	if err != nil || from != aPub || got != m {
+	if err != nil || from != aPub || got.Type != m.Type || got.Tx != m.Tx || got.Src != m.Src {
 		t.Fatalf("open: %v from=%v msg=%+v", err, from == aPub, got)
 	}
 	// Two sealings of the same message share no bytes beyond chance.
@@ -83,4 +83,18 @@ func FuzzOpen(f *testing.F) {
 	f.Fuzz(func(t *testing.T, b []byte) {
 		Open(b, priv, pub)
 	})
+}
+
+func TestJoinMessage(t *testing.T) {
+	aPriv, aPub := keys(t)
+	bPriv, bPub := keys(t)
+	data := []byte(`{"room_id":"r1","token":"t"}`)
+	pkt, err := Seal(Msg{Type: TypeJoin, Tx: NewTxID(), Data: data}, aPriv, aPub, bPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	from, got, err := Open(pkt, bPriv, bPub)
+	if err != nil || from != aPub || got.Type != TypeJoin || string(got.Data) != string(data) {
+		t.Fatalf("open: %v %+v", err, got)
+	}
 }

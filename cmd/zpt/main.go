@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -59,6 +60,11 @@ const usage = `zpt — zeropentime: децентрализованные вир�
   zpt logs    [-f] [-n 50]                  журнал службы (-f — следить)
   zpt pubkey  -c КОНФИГ                     публичные ключи узла в статических комнатах
   zpt room new                              секрет статической комнаты (без контроллера)
+
+Комнаты без контроллера (владелец — этот узел):
+  zpt room create -local -name ИМЯ [-me ВАШЕ_ИМЯ] [-subnet 10.100.7.0/24]
+  zpt room invite КОМНАТА [-uses 1] [-hours 24] [-endpoint host:port]   ссылка для zpt join
+  zpt room list | zpt room members КОМНАТА | zpt room kick КОМНАТА УЧАСТНИК
 
   zpt version
 
@@ -173,8 +179,11 @@ func loadOrCreateKey(path string) (*identity.Identity, bool, error) {
 }
 
 func cmdRoom(args []string) error {
-	if len(args) == 0 || args[0] != "new" {
-		return errors.New("использование: zpt room new")
+	if len(args) > 0 && args[0] != "new" {
+		return cmdRoomLocal(args[0], args[1:])
+	}
+	if len(args) == 0 {
+		return errors.New("использование: zpt room new | create -local | invite | list | members | kick")
 	}
 	s, err := obfs.NewSecret()
 	if err != nil {
@@ -237,6 +246,13 @@ func cmdJoin(args []string) error {
 	fl.Parse(args)
 	if fl.NArg() != 1 {
 		return errors.New("использование: zpt join [-name ИМЯ] \"zpt://join?...\"")
+	}
+	if strings.HasPrefix(strings.TrimSpace(fl.Arg(0)), "zpt://local") {
+		l, err := openLocal(fl, cfgPath, explicit)
+		if err != nil {
+			return err
+		}
+		return joinLocal(l, fl.Arg(0), *name)
 	}
 	inv, err := api.ParseInvite(fl.Arg(0))
 	if err != nil {

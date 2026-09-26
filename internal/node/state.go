@@ -24,6 +24,8 @@ type State struct {
 	// DNS is the DNS choice made on this machine ("zpt dns"); nil follows
 	// the node config, then the rooms.
 	DNS *DNSChoice `json:"dns,omitempty"`
+	// Local are rooms without a controller (see local.go).
+	Local []LocalRoom `json:"local,omitempty"`
 }
 
 // DNSChoice is set with "zpt dns".
@@ -118,6 +120,9 @@ func (s *State) Unpin(roomID string) (controller string, ok bool) {
 
 // RoomKey returns the pinned key of a room at a controller.
 func (s *State) RoomKey(controller, roomID string) (string, bool) {
+	if k, ok := s.localRoomKey(controller, roomID); ok {
+		return k, true
+	}
 	for _, c := range s.Controllers {
 		if c.URL == normURL(controller) {
 			k, ok := c.Rooms[roomID]

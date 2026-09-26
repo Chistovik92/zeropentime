@@ -75,24 +75,26 @@ type Node struct {
 	log  *slog.Logger
 	sock *magicsock.Conn
 
-	mu       sync.Mutex
-	rooms    map[string]*running    // by room ID, or "static:<name>"
-	versions map[string]int64       // highest accepted config version per room
-	pending  map[string]string      // last reported non-active status per room
-	last     map[string]*api.NetMap // last netmap per controller
-	reports  map[string]netcheck.Report
-	portMap  netip.AddrPort
-	changed  chan struct{} // closed and replaced when our reachability changes
-	disco    *discoMgr
-	exitNote string // last explanation why the chosen exit is not used
-	ksKey    string // the kill switch rules in force ("" = off)
-	dnsNote  string // last DNS warning (logged once)
-	syncs    map[string]syncInfo
-	started  time.Time
-	wake     chan struct{} // Reload
-	gossip   map[string]*gossipRoom
-	signed   map[string]*pki.Signed // newest accepted signed config per room
-	noCtrl   atomic.Bool            // tests: the controllers are unreachable
+	mu           sync.Mutex
+	rooms        map[string]*running    // by room ID, or "static:<name>"
+	versions     map[string]int64       // highest accepted config version per room
+	pending      map[string]string      // last reported non-active status per room
+	last         map[string]*api.NetMap // last netmap per controller
+	reports      map[string]netcheck.Report
+	portMap      netip.AddrPort
+	changed      chan struct{} // closed and replaced when our reachability changes
+	disco        *discoMgr
+	exitNote     string // last explanation why the chosen exit is not used
+	ksKey        string // the kill switch rules in force ("" = off)
+	dnsNote      string // last DNS warning (logged once)
+	syncs        map[string]syncInfo
+	started      time.Time
+	wake         chan struct{} // Reload
+	gossip       map[string]*gossipRoom
+	signed       map[string]*pki.Signed // newest accepted signed config per room
+	noCtrl       atomic.Bool            // tests: the controllers are unreachable
+	localApplied map[string]string      // local room URL -> config and peers applied
+	joining      map[string]bool        // local rooms we are asking to join
 
 	relayMu     sync.Mutex
 	vlessConn   atomic.Pointer[vless.PacketConn]
@@ -132,7 +134,7 @@ func Start(o Options) (_ *Node, err error) {
 		rooms: map[string]*running{}, versions: map[string]int64{}, pending: map[string]string{}, last: map[string]*api.NetMap{},
 		reports: map[string]netcheck.Report{}, changed: make(chan struct{}),
 		syncs: map[string]syncInfo{}, started: time.Now(), wake: make(chan struct{}, 1),
-		signed: map[string]*pki.Signed{},
+		signed: map[string]*pki.Signed{}, localApplied: map[string]string{}, joining: map[string]bool{},
 	}
 	defer func() {
 		if err != nil {
@@ -326,6 +328,7 @@ func (n *Node) supervise(ctx context.Context) {
 			if st.DNS != nil {
 				pins += fmt.Sprintf("%+v", *st.DNS)
 			}
+			n.syncLocal(st)
 			if pins != prevPins {
 				prevPins = pins
 				n.reapplyAll()
@@ -503,6 +506,14 @@ func (n *Node) apply(url string, nm *api.NetMap) {
 		keyStr, pinned := st.RoomKey(url, rs.RoomID)
 		if !pinned {
 			continue // not joined from this machine (or left)
+		}
+		if rs.Status == "active" && rs.Config == nil && strings.HasPrefix(url, localPrefix) {
+			// A local room we were just accepted into: it runs with the
+			// owner as the only peer until the signed config arrives.
+			if cur, ok := n.rooms[rs.RoomID]; ok {
+				desired[rs.RoomID] = cur.cfg
+			}
+			continue
 		}
 		if rs.Status != "active" || rs.Config == nil {
 			if n.pending[rs.RoomID] != rs.Status {

@@ -34,12 +34,15 @@ import (
 
 const (
 	gossipEvery   = 20 * time.Second
+	gossipRepeat  = 2 * time.Second
 	gossipMaxSize = 4 << 20
 )
 
 type gossipRoom struct {
 	cancel context.CancelFunc
 	kick   chan struct{}
+	pc     net.PacketConn
+	ln     net.Listener
 }
 
 // startGossipLocked runs gossip for a controller room.
@@ -64,11 +67,7 @@ func (n *Node) startGossipLocked(roomID string, r *room.Room) {
 		n.log.Warn("gossip: cannot listen in the room", "room", r.Name, "err", err)
 		return
 	}
-	go func() {
-		<-ctx.Done()
-		pc.Close()
-		ln.Close()
-	}()
+	g.pc, g.ln = pc, ln
 	go n.gossipServe(ctx, roomID, ln)
 	go n.gossipListen(ctx, roomID, r, pc)
 	go n.gossipAnnounce(ctx, roomID, pc, g.kick)
@@ -77,6 +76,12 @@ func (n *Node) startGossipLocked(roomID string, r *room.Room) {
 func (n *Node) stopGossipLocked(roomID string) {
 	if g, ok := n.gossip[roomID]; ok {
 		g.cancel()
+		// Closed here, before the room: sockets of a closing in-process
+		// network stack must not outlive it.
+		if g.pc != nil {
+			g.pc.Close()
+			g.ln.Close()
+		}
 		delete(n.gossip, roomID)
 	}
 }
@@ -123,8 +128,12 @@ func (n *Node) peerAddrs(roomID string) []netip.Addr {
 }
 
 func (n *Node) gossipAnnounce(ctx context.Context, roomID string, pc net.PacketConn, kick <-chan struct{}) {
-	t := time.NewTicker(gossipEvery)
+	t := time.NewTimer(gossipEvery)
 	defer t.Stop()
+	// A new version is announced a few times in quick succession: a lone
+	// UDP packet can be lost (for example, one that crosses a session
+	// change of the tunnel), and the next regular announce is far away.
+	repeat := 0
 	for {
 		n.mu.Lock()
 		v := n.versions[roomID]
@@ -133,11 +142,24 @@ func (n *Node) gossipAnnounce(ctx context.Context, roomID string, pc net.PacketC
 		for _, a := range n.peerAddrs(roomID) {
 			pc.WriteTo(msg, net.UDPAddrFromAddrPort(netip.AddrPortFrom(a, acl.GossipPort)))
 		}
+		next := gossipEvery
+		if repeat > 0 {
+			repeat--
+			next = gossipRepeat
+		}
+		t.Reset(next)
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		case <-kick:
+			repeat = 3
+			if !t.Stop() {
+				select {
+				case <-t.C:
+				default:
+				}
+			}
 		}
 	}
 }
@@ -270,6 +292,9 @@ func (n *Node) applyGossip(roomID string, s *pki.Signed, peer netip.Addr) error 
 	n.mu.Unlock()
 	if after > before {
 		n.log.Info("room config from a peer", "room", name, "peer", peer, "version", after)
+		if strings.HasPrefix(url, localPrefix) {
+			n.persistLocal(roomID, s)
+		}
 	}
 	return nil
 }

@@ -268,6 +268,14 @@ func (d *discoMgr) handle(pkt []byte, from netip.AddrPort) {
 	now := d.now()
 	var out []outgoing
 	changed := false
+	switch m.Type {
+	case disco.TypeJoin:
+		go d.n.handleJoin(sender, m.Data, from)
+		return
+	case disco.TypeJoinReply:
+		go d.n.handleJoinReply(sender, m.Data)
+		return
+	}
 	d.mu.Lock()
 	dp, known := d.byKey[sender]
 	if !known {

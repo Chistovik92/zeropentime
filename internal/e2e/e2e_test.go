@@ -32,6 +32,7 @@ import (
 	"github.com/Chistovik92/zeropentime/internal/dht/dhttest"
 	"github.com/Chistovik92/zeropentime/internal/identity"
 	"github.com/Chistovik92/zeropentime/internal/node"
+	"github.com/Chistovik92/zeropentime/internal/pki"
 	"github.com/Chistovik92/zeropentime/internal/store"
 	"github.com/Chistovik92/zeropentime/internal/stun"
 
@@ -958,4 +959,88 @@ func TestDHTAnnounce(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// 0.5.2: a room without a controller. The owner's node creates and signs
+// it; another node joins with an invite link by asking the owner over
+// disco, gets the signed config through the room, and they talk. Kicking
+// takes the member out.
+func TestLocalRoom(t *testing.T) {
+	e := newEnv(t)
+	a, b := e.node("a"), e.node("b")
+
+	st, err := node.LoadState(a.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lr, err := st.CreateLocalRoom(a.id, "Дом", "alice", netip.Prefix{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := lr.NewInvite(1, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, _ := pki.ParseRoomKey(lr.RoomKey)
+	cfg, err := pki.VerifyRoomConfig(pub, lr.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, disc := a.id.DiscoKey()
+	wg, _ := a.id.RoomKey(lr.RoomID)
+	link := node.LocalLink{RoomID: lr.RoomID, RoomKey: lr.RoomKey, Secret: cfg.Secret, Subnet: cfg.Subnet, Token: tok,
+		Owner: a.id.NodeID(), OwnerDisco: disc, OwnerWG: wg.Public(), OwnerIP: cfg.Members[0].IP,
+		Endpoints: []netip.AddrPort{netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), a.node.Port())}}
+	parsed, err := node.ParseLocalLink(link.String())
+	if err != nil || parsed.Token != tok || parsed.OwnerIP != link.OwnerIP {
+		t.Fatalf("link round trip: %v %+v", err, parsed)
+	}
+	if err := st.Save(a.state); err != nil {
+		t.Fatal(err)
+	}
+	a.node.Reload()
+	eventually(t, 10*time.Second, "owner's room up", hasRoom(a, "dom", 0))
+
+	st2, _ := node.LoadState(b.state)
+	st2.Local = append(st2.Local, node.LocalRoom{RoomID: link.RoomID, Name: "joining", RoomKey: link.RoomKey,
+		Join: &node.LocalJoin{Invite: parsed, Name: "bob"}})
+	if err := st2.Save(b.state); err != nil {
+		t.Fatal(err)
+	}
+	b.node.Reload()
+	eventually(t, 20*time.Second, "owner accepts bob", hasRoom(a, "dom", 1))
+	var bRoom string
+	eventually(t, 20*time.Second, "bob gets the signed config", func() error {
+		st, _ := node.LoadState(b.state)
+		l, err := st.LocalRoomByRef(link.RoomID)
+		if err != nil || l.Config == nil || l.Join != nil {
+			return fmt.Errorf("not yet: %v", err)
+		}
+		if rs := b.node.Rooms(); len(rs) == 1 {
+			bRoom = rs[0].Name
+			return nil
+		}
+		return errors.New("no room")
+	})
+	srv := serveEcho(t, a, "dom")
+	eventually(t, 15*time.Second, "bob talks to alice", func() error { return talk(b, bRoom, srv, 3*time.Second) })
+
+	// The invite was for one use: a third node is refused.
+	st, _ = node.LoadState(a.state)
+	owner, _ := st.LocalRoomByRef("Дом")
+	if len(owner.Invites) != 1 || owner.Invites[0].UsesLeft != 0 {
+		t.Fatalf("invite uses: %+v", owner.Invites)
+	}
+	// Kick bob: alice's room drops him.
+	if err := owner.Update(func(c *pki.RoomConfig) error {
+		c.Members = c.Members[:1]
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Save(a.state); err != nil {
+		t.Fatal(err)
+	}
+	a.node.Reload()
+	eventually(t, 10*time.Second, "bob kicked", hasRoom(a, "dom", 0))
 }

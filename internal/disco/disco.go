@@ -31,6 +31,10 @@ import (
 const (
 	TypePing byte = 1
 	TypePong byte = 2
+	// TypeJoin and TypeJoinReply carry a request to join a room without a
+	// controller and the answer (Data: JSON, see package node).
+	TypeJoin      byte = 3
+	TypeJoinReply byte = 4
 )
 
 const (
@@ -38,7 +42,9 @@ const (
 	txLen      = 12
 	payloadLen = 1 + 1 + txLen + 18 // version, type, tx, address (16 IP + 2 port)
 	// MaxLen bounds what we try to open.
-	MaxLen = 512
+	MaxLen = 1400
+	// MaxData bounds Msg.Data.
+	MaxData = 1000
 )
 
 // TxID identifies a ping and its pong.
@@ -60,6 +66,8 @@ type Msg struct {
 	// Src, in a pong, is the address the ping came from — the sender learns
 	// how the receiver sees it.
 	Src netip.AddrPort
+	// Data is the body of join messages.
+	Data []byte
 }
 
 // TagKey derives the demultiplexing tag key of the node with this disco key.
@@ -71,6 +79,12 @@ func TagKey(pub identity.Key) [16]byte {
 }
 
 func encodePayload(m Msg) []byte {
+	if m.Type == TypeJoin || m.Type == TypeJoinReply {
+		p := make([]byte, 2+txLen, 2+txLen+len(m.Data))
+		p[0], p[1] = version, m.Type
+		copy(p[2:], m.Tx[:])
+		return append(p, m.Data...)
+	}
 	p := make([]byte, payloadLen)
 	p[0] = version
 	p[1] = m.Type
@@ -84,6 +98,14 @@ func encodePayload(m Msg) []byte {
 }
 
 func decodePayload(p []byte) (Msg, error) {
+	if len(p) >= 2+txLen && p[0] == version && (p[1] == TypeJoin || p[1] == TypeJoinReply) {
+		if len(p) > 2+txLen+MaxData {
+			return Msg{}, errors.New("disco: join message too long")
+		}
+		m := Msg{Type: p[1], Data: append([]byte(nil), p[2+txLen:]...)}
+		copy(m.Tx[:], p[2:2+txLen])
+		return m, nil
+	}
 	if len(p) != payloadLen || p[0] != version || (p[1] != TypePing && p[1] != TypePong) {
 		return Msg{}, errors.New("disco: bad payload")
 	}
