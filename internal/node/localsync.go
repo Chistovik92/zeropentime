@@ -66,6 +66,9 @@ func (n *Node) modifyLocal(roomID string, fn func(*LocalRoom) error) error {
 
 // syncLocal brings the local rooms in line with the state file.
 func (n *Node) syncLocal(st *State) {
+	if len(st.Local) > 0 {
+		n.startPublicSTUN()
+	}
 	want := map[string]bool{}
 	for i := range st.Local {
 		lr := &st.Local[i]
@@ -81,6 +84,9 @@ func (n *Node) syncLocal(st *State) {
 			n.mu.Unlock()
 			if !same {
 				n.apply(url, nm)
+			}
+			if cfg, err := lr.config(); err == nil {
+				n.ensureSignKey(lr, cfg)
 			}
 		case lr.Join != nil && lr.Join.IP.IsValid():
 			n.startProvisional(lr)
@@ -254,7 +260,7 @@ func (n *Node) startProvisional(lr *LocalRoom) {
 // persistLocal records a newer signed config of a local room (from gossip)
 // in the state file, and finishes a join.
 func (n *Node) persistLocal(roomID string, s *pki.Signed) {
-	n.modifyLocal(roomID, func(lr *LocalRoom) error {
+	err := n.modifyLocal(roomID, func(lr *LocalRoom) error {
 		pub, err := pki.ParseRoomKey(lr.RoomKey)
 		if err != nil {
 			return err
@@ -278,6 +284,9 @@ func (n *Node) persistLocal(roomID string, s *pki.Signed) {
 		}
 		return nil
 	})
+	if err == nil {
+		n.Reload() // a new admin fetches the signing key at once
+	}
 }
 
 // ---- accepting (an admin's side) ----
@@ -366,4 +375,25 @@ func (n *Node) handleJoin(sender identity.Key, data []byte, from netip.AddrPort)
 	if pkt, err := disco.Seal(disco.Msg{Type: disco.TypeJoinReply, Tx: disco.NewTxID(), Data: out}, n.disco.priv, n.disco.pub, sender); err == nil {
 		n.sock.WriteTo(pkt, from)
 	}
+}
+
+// publicSTUNKey is where the public STUN report is kept among the
+// controllers' ones.
+const publicSTUNKey = "stun:public"
+
+// startPublicSTUN checks the external address with public STUN servers:
+// a node without a controller has no other way to learn it, and members
+// of its local rooms need it to reach the node from outside.
+func (n *Node) startPublicSTUN() {
+	servers := n.opts.Config.PublicSTUNServers()
+	n.mu.Lock()
+	if n.publicSTUN || len(servers) == 0 {
+		n.mu.Unlock()
+		return
+	}
+	n.publicSTUN = true
+	n.mu.Unlock()
+	ch := make(chan []string, 1)
+	ch <- servers
+	go n.netcheckLoop(n.ctx, publicSTUNKey, ch)
 }

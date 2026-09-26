@@ -7,6 +7,7 @@ package fsutil
 import (
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // SecureDir creates dir if needed and restricts access to it: 0700 on Unix;
@@ -27,13 +28,47 @@ func WriteFile(path string, data []byte) error {
 	if err := SecureDir(filepath.Dir(path)); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	// A temporary file of its own: the CLI and the service may write at
+	// the same time.
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	if err := secureFile(tmp); err != nil {
+	tmp := f.Name()
+	_, err = f.Write(data)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = secureFile(tmp)
+	}
+	if err != nil {
 		os.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, path)
+	// On Windows the file cannot be replaced while another process is
+	// reading it: try again for a moment.
+	for i := 0; ; i++ {
+		err = os.Rename(tmp, path)
+		if err == nil || i == 20 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		os.Remove(tmp)
+	}
+	return err
+}
+
+// ReadFile reads a file written by WriteFile, retrying for a moment if it
+// is being replaced right now (Windows).
+func ReadFile(path string) ([]byte, error) {
+	for i := 0; ; i++ {
+		b, err := os.ReadFile(path)
+		if err == nil || os.IsNotExist(err) || i == 20 {
+			return b, err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

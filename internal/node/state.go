@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io/fs"
 	"net/netip"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -62,7 +61,7 @@ func StatePath(keyPath string) string {
 
 // LoadState reads the state file; a missing file is an empty state.
 func LoadState(path string) (*State, error) {
-	b, err := os.ReadFile(path)
+	b, err := fsutil.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return &State{}, nil
 	}

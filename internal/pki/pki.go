@@ -58,6 +58,9 @@ type Member struct {
 	Exit bool `json:"exit,omitempty"`
 	// ExitDNS: the exit answers DNS queries on its room address.
 	ExitDNS bool `json:"exit_dns,omitempty"`
+	// Admin: in a room without a controller, this member holds the room
+	// signing key and may accept members and change the room.
+	Admin bool `json:"admin,omitempty"`
 }
 
 // RoomConfig is the signed description of a room.

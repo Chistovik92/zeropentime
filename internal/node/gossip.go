@@ -71,6 +71,7 @@ func (n *Node) startGossipLocked(roomID string, r *room.Room) {
 	go n.gossipServe(ctx, roomID, ln)
 	go n.gossipListen(ctx, roomID, r, pc)
 	go n.gossipAnnounce(ctx, roomID, pc, g.kick)
+	go n.gossipCards(ctx, roomID, r)
 }
 
 func (n *Node) stopGossipLocked(roomID string) {
@@ -242,8 +243,20 @@ func (n *Node) gossipServe(ctx context.Context, roomID string, ln net.Listener) 
 		go func() {
 			defer c.Close()
 			c.SetDeadline(time.Now().Add(10 * time.Second))
-			line, err := bufio.NewReader(io.LimitReader(c, 256)).ReadString('\n')
-			if err != nil || strings.TrimSpace(line) != "GET "+roomID {
+			rd := bufio.NewReader(io.LimitReader(c, gossipMaxSize))
+			line, err := rd.ReadString('\n')
+			if err != nil || len(line) > 256 {
+				return
+			}
+			switch strings.TrimSpace(line) {
+			case "CARDS " + roomID:
+				n.serveCards(roomID, rd, c)
+				return
+			case "KEY " + roomID:
+				n.serveSignKey(roomID, c)
+				return
+			case "GET " + roomID:
+			default:
 				return
 			}
 			n.mu.Lock()

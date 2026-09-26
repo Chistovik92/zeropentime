@@ -91,10 +91,14 @@ type Node struct {
 	started      time.Time
 	wake         chan struct{} // Reload
 	gossip       map[string]*gossipRoom
-	signed       map[string]*pki.Signed // newest accepted signed config per room
-	noCtrl       atomic.Bool            // tests: the controllers are unreachable
-	localApplied map[string]string      // local room URL -> config and peers applied
-	joining      map[string]bool        // local rooms we are asking to join
+	signed       map[string]*pki.Signed          // newest accepted signed config per room
+	noCtrl       atomic.Bool                     // tests: the controllers are unreachable
+	localApplied map[string]string               // local room URL -> config and peers applied
+	joining      map[string]bool                 // local rooms we are asking to join
+	members      map[string]map[string]bool      // node IDs in the signed config per room
+	admins       map[string][]netip.Addr         // room addresses of admins per room (local rooms)
+	cards        map[string]map[string]*peerCard // newest peer card per room and node
+	publicSTUN   bool                            // the public STUN check is running
 
 	relayMu     sync.Mutex
 	vlessConn   atomic.Pointer[vless.PacketConn]
@@ -135,6 +139,7 @@ func Start(o Options) (_ *Node, err error) {
 		reports: map[string]netcheck.Report{}, changed: make(chan struct{}),
 		syncs: map[string]syncInfo{}, started: time.Now(), wake: make(chan struct{}, 1),
 		signed: map[string]*pki.Signed{}, localApplied: map[string]string{}, joining: map[string]bool{},
+		members: map[string]map[string]bool{}, admins: map[string][]netip.Addr{}, cards: map[string]map[string]*peerCard{},
 	}
 	defer func() {
 		if err != nil {
@@ -604,6 +609,14 @@ func (n *Node) roomFromConfig(url, keyStr string, rs api.RoomState, nm *api.NetM
 		n.kickGossipLocked(rs.RoomID)
 	}
 	n.versions[rs.RoomID] = cfg.Version
+	ids, admins := map[string]bool{}, []netip.Addr(nil)
+	for _, m := range cfg.Members {
+		ids[m.NodeID] = true
+		if m.Admin {
+			admins = append(admins, m.IP)
+		}
+	}
+	n.members[rs.RoomID], n.admins[rs.RoomID] = ids, admins
 
 	me := n.ID.NodeID()
 	rc := &config.Room{Name: cfg.Name, Secret: cfg.Secret, MTU: config.DefaultMTU, Broadcast: cfg.Broadcast, RoomDNS: cfg.DNS, DHT: cfg.DHT}

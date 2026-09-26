@@ -65,6 +65,7 @@ const usage = `zpt — zeropentime: децентрализованные вир�
   zpt room create -local -name ИМЯ [-me ВАШЕ_ИМЯ] [-subnet 10.100.7.0/24]
   zpt room invite КОМНАТА [-uses 1] [-hours 24] [-endpoint host:port]   ссылка для zpt join
   zpt room list | zpt room members КОМНАТА | zpt room kick КОМНАТА УЧАСТНИК
+  zpt room admin КОМНАТА УЧАСТНИК           сделать участника со-админом (получит ключ подписи)
 
   zpt version
 
@@ -183,7 +184,7 @@ func cmdRoom(args []string) error {
 		return cmdRoomLocal(args[0], args[1:])
 	}
 	if len(args) == 0 {
-		return errors.New("использование: zpt room new | create -local | invite | list | members | kick")
+		return errors.New("использование: zpt room new | create -local | invite | list | members | kick | admin")
 	}
 	s, err := obfs.NewSecret()
 	if err != nil {

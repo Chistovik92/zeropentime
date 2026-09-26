@@ -158,11 +158,50 @@ func cmdRoomLocal(action string, args []string) error {
 			return err
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "ИМЯ\tIP\tID УЗЛА")
+		fmt.Fprintln(w, "ИМЯ\tIP\tРОЛЬ\tID УЗЛА")
 		for _, m := range cfg.Members {
-			fmt.Fprintf(w, "%s\t%s\t%s\n", m.Name, m.IP, m.NodeID)
+			role := "участник"
+			if m.Admin {
+				role = "админ"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", m.Name, m.IP, role, m.NodeID)
 		}
 		return w.Flush()
+	case "admin":
+		if fl.NArg() != 2 {
+			return errors.New("использование: zpt room admin КОМНАТА УЧАСТНИК")
+		}
+		lr, err := l.st.LocalRoomByRef(fl.Arg(0))
+		if err != nil {
+			return err
+		}
+		who := fl.Arg(1)
+		err = lr.Update(func(c *pki.RoomConfig) error {
+			for i, m := range c.Members {
+				if m.NodeID == l.id.NodeID() {
+					c.Members[i].Admin = true // rooms made by 0.5.2 did not mark the owner
+				}
+			}
+			for i, m := range c.Members {
+				if m.Name == who || m.NodeID == who {
+					if m.Admin {
+						return fmt.Errorf("%s уже админ", m.Name)
+					}
+					c.Members[i].Admin = true
+					return nil
+				}
+			}
+			return fmt.Errorf("в комнате нет участника %q", who)
+		})
+		if err != nil {
+			return err
+		}
+		if err := l.save(); err != nil {
+			return err
+		}
+		fmt.Println("участник стал со-админом: его узел получит ключ подписи комнаты через туннель и сможет принимать участников и менять комнату.")
+		fmt.Println("Отнять права без пересоздания комнаты нельзя — ключ уже у него.")
+		return nil
 	case "kick":
 		if fl.NArg() != 2 {
 			return errors.New("использование: zpt room kick КОМНАТА УЧАСТНИК")

@@ -52,6 +52,10 @@ type Config struct {
 	// RelayTransport: "auto" (UDP, VLESS + REALITY when UDP is blocked),
 	// "udp" or "vless". Default: auto.
 	RelayTransport string `yaml:"relay_transport"`
+	// PublicSTUN are STUN servers ("host:port") this node asks for its
+	// external address when it is in rooms without a controller; empty
+	// means DefaultPublicSTUN, ["off"] turns it off.
+	PublicSTUN []string `yaml:"public_stun"`
 	// AdvertiseRoutes offers networks behind this node to the rooms it is
 	// in (subnet router, Linux only for now); room admins approve them.
 	AdvertiseRoutes []netip.Prefix `yaml:"advertise_routes"`
@@ -189,6 +193,20 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return &c, nil
+}
+
+// DefaultPublicSTUN are well-known public STUN servers.
+var DefaultPublicSTUN = []string{"stun.l.google.com:19302", "stun.cloudflare.com:3478"}
+
+// PublicSTUNServers returns the public STUN servers to use (none if off).
+func (c *Config) PublicSTUNServers() []string {
+	if len(c.PublicSTUN) == 0 {
+		return DefaultPublicSTUN
+	}
+	if len(c.PublicSTUN) == 1 && c.PublicSTUN[0] == "off" {
+		return nil
+	}
+	return c.PublicSTUN
 }
 
 // PortMapEnabled reports whether router port mapping is allowed.

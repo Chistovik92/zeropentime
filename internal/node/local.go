@@ -174,7 +174,7 @@ func (s *State) CreateLocalRoom(id *identity.Identity, name, memberName string, 
 		return nil, err
 	}
 	cfg := &pki.RoomConfig{RoomID: roomID, Name: name, Subnet: subnet, Secret: secret, Version: 1,
-		Members: []pki.Member{{NodeID: id.NodeID(), Name: memberName, WGKey: wg.Public(), IP: hostAddr(subnet, 1)}}}
+		Members: []pki.Member{{NodeID: id.NodeID(), Name: memberName, WGKey: wg.Public(), IP: hostAddr(subnet, 1), Admin: true}}}
 	lr := LocalRoom{RoomID: roomID, Name: name, SignKey: sign.Seed(),
 		RoomKey: pki.RoomKeyString(sign.Public().(ed25519.PublicKey))}
 	if err := lr.sign(cfg); err != nil {

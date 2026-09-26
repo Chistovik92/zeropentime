@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Chistovik92/zeropentime/internal/acl"
 	"github.com/Chistovik92/zeropentime/internal/api"
 	"github.com/Chistovik92/zeropentime/internal/client"
 	"github.com/Chistovik92/zeropentime/internal/config"
@@ -195,7 +196,7 @@ func (e *env) nodeCfg(name string, locals func(uint16, []netip.Prefix) []netip.A
 	id, _ := identity.Generate()
 	dir := testutil.TempDir(e.t)
 	port := 0
-	cfg := &config.Config{ListenPort: &port, Userspace: true}
+	cfg := &config.Config{ListenPort: &port, Userspace: true, PublicSTUN: []string{"off"}}
 	if tweak != nil {
 		tweak(cfg)
 	}
@@ -1011,7 +1012,10 @@ func TestLocalRoom(t *testing.T) {
 	eventually(t, 20*time.Second, "owner accepts bob", hasRoom(a, "dom", 1))
 	var bRoom string
 	eventually(t, 20*time.Second, "bob gets the signed config", func() error {
-		st, _ := node.LoadState(b.state)
+		st, err := node.LoadState(b.state)
+		if err != nil {
+			return err
+		}
 		l, err := st.LocalRoomByRef(link.RoomID)
 		if err != nil || l.Config == nil || l.Join != nil {
 			return fmt.Errorf("not yet: %v", err)
@@ -1043,4 +1047,185 @@ func TestLocalRoom(t *testing.T) {
 	}
 	a.node.Reload()
 	eventually(t, 10*time.Second, "bob kicked", hasRoom(a, "dom", 0))
+}
+
+// loopbackLocals makes a node tell others it is at 127.0.0.1.
+func loopbackLocals(port uint16, _ []netip.Prefix) []netip.AddrPort {
+	return []netip.AddrPort{netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), port)}
+}
+
+// localRoomLink creates a local room on tn and an invite for n people.
+func localRoomLink(t *testing.T, tn *testNode, name, member string, uses int) node.LocalLink {
+	t.Helper()
+	st, err := node.LoadState(tn.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lr, err := st.CreateLocalRoom(tn.id, name, member, netip.Prefix{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Save(tn.state); err != nil {
+		t.Fatal(err)
+	}
+	return inviteLink(t, tn, lr.RoomID, uses)
+}
+
+// inviteLink issues an invite of an admin tn to its local room.
+func inviteLink(t *testing.T, tn *testNode, roomID string, uses int) node.LocalLink {
+	t.Helper()
+	st, err := node.LoadState(tn.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lr, err := st.LocalRoomByRef(roomID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := lr.NewInvite(uses, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, _ := pki.ParseRoomKey(lr.RoomKey)
+	cfg, err := pki.VerifyRoomConfig(pub, lr.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, disc := tn.id.DiscoKey()
+	wg, _ := tn.id.RoomKey(lr.RoomID)
+	link := node.LocalLink{RoomID: lr.RoomID, RoomKey: lr.RoomKey, Secret: cfg.Secret, Subnet: cfg.Subnet, Token: tok,
+		Owner: tn.id.NodeID(), OwnerDisco: disc, OwnerWG: wg.Public(),
+		Endpoints: []netip.AddrPort{netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), tn.node.Port())}}
+	for _, m := range cfg.Members {
+		if m.NodeID == tn.id.NodeID() {
+			link.OwnerIP = m.IP
+		}
+	}
+	if err := st.Save(tn.state); err != nil {
+		t.Fatal(err)
+	}
+	tn.node.Reload()
+	return link
+}
+
+// joinLocalRoom asks to join with link and waits for the signed config;
+// it returns the room's name on tn.
+func joinLocalRoom(t *testing.T, tn *testNode, link node.LocalLink, member string) string {
+	t.Helper()
+	st, _ := node.LoadState(tn.state)
+	st.Local = append(st.Local, node.LocalRoom{RoomID: link.RoomID, Name: "joining", RoomKey: link.RoomKey,
+		Join: &node.LocalJoin{Invite: link, Name: member}})
+	if err := st.Save(tn.state); err != nil {
+		t.Fatal(err)
+	}
+	tn.node.Reload()
+	var name string
+	eventually(t, 30*time.Second, member+" gets the signed config", func() error {
+		st, err := node.LoadState(tn.state)
+		if err != nil {
+			return err
+		}
+		l, err := st.LocalRoomByRef(link.RoomID)
+		if err != nil || l.Config == nil || l.Join != nil {
+			return fmt.Errorf("not yet: %v", err)
+		}
+		if rs := tn.node.Rooms(); len(rs) == 1 {
+			name = rs[0].Name
+			return nil
+		}
+		return errors.New("no room")
+	})
+	return name
+}
+
+// 0.5.3: members of a local room learn how to reach each other from signed
+// peer cards passed around by gossip — the owner told each of them only
+// about itself — and keep talking when the owner is gone.
+func TestLocalRoomPeerCards(t *testing.T) {
+	e := newEnv(t)
+	a, b, c := e.nodeWith("a", loopbackLocals), e.nodeWith("b", loopbackLocals), e.nodeWith("c", loopbackLocals)
+	link := localRoomLink(t, a, "Дача", "alice", 2)
+	eventually(t, 10*time.Second, "owner's room up", hasRoom(a, "dacha", 0))
+	bRoom := joinLocalRoom(t, b, link, "bob")
+	cRoom := joinLocalRoom(t, c, link, "carol")
+	eventually(t, 20*time.Second, "owner sees both", hasRoom(a, "dacha", 2))
+	eventually(t, 60*time.Second, "bob knows carol", hasRoom(b, bRoom, 2))
+	eventually(t, 60*time.Second, "carol knows bob", hasRoom(c, cRoom, 2))
+	srv := serveEcho(t, c, cRoom)
+	eventually(t, 30*time.Second, "bob talks to carol", func() error { return talk(b, bRoom, srv, 3*time.Second) })
+
+	a.node.Close()
+	if err := talk(b, bRoom, srv, 5*time.Second); err != nil {
+		t.Fatalf("bob and carol without the owner: %v", err)
+	}
+}
+
+// 0.5.3: a co-admin gets the room signing key through the room and then
+// accepts members itself while the owner is gone.
+func TestLocalRoomCoAdmin(t *testing.T) {
+	e := newEnv(t)
+	a, b, c := e.nodeWith("a", loopbackLocals), e.nodeWith("b", loopbackLocals), e.nodeWith("c", loopbackLocals)
+	link := localRoomLink(t, a, "Офис", "alice", 1)
+	eventually(t, 10*time.Second, "owner's room up", hasRoom(a, "ofis", 0))
+	joinLocalRoom(t, b, link, "bob")
+
+	st, _ := node.LoadState(a.state)
+	lr, _ := st.LocalRoomByRef(link.RoomID)
+	if err := lr.Update(func(c *pki.RoomConfig) error {
+		for i := range c.Members {
+			if c.Members[i].Name == "bob" {
+				c.Members[i].Admin = true
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Save(a.state); err != nil {
+		t.Fatal(err)
+	}
+	a.node.Reload()
+	eventually(t, 40*time.Second, "bob gets the signing key", func() error {
+		st, err := node.LoadState(b.state)
+		if err != nil {
+			return err
+		}
+		l, err := st.LocalRoomByRef(link.RoomID)
+		if err != nil || len(l.SignKey) == 0 {
+			return fmt.Errorf("not yet: %v", err)
+		}
+		return nil
+	})
+	a.node.Close()
+	bLink := inviteLink(t, b, link.RoomID, 1)
+	cRoom := joinLocalRoom(t, c, bLink, "carol")
+	st, _ = node.LoadState(c.state)
+	cl, _ := st.LocalRoomByRef(link.RoomID)
+	if len(cl.SignKey) != 0 {
+		t.Fatal("a plain member got the signing key")
+	}
+	bRooms := b.node.Rooms()
+	if len(bRooms) != 1 {
+		t.Fatalf("bob's rooms: %+v", bRooms)
+	}
+	srv := serveEcho(t, b, bRooms[0].Name)
+	eventually(t, 30*time.Second, "carol talks to bob", func() error { return talk(c, cRoom, srv, 3*time.Second) })
+
+	// Carol is no admin: bob does not give her the key when she asks.
+	cr, err := c.node.Room(cRoom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := cr.Net.DialContextTCPAddrPort(ctx, netip.AddrPortFrom(srv.Addr(), acl.GossipPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	fmt.Fprintf(conn, "KEY %s\n", link.RoomID)
+	if b, _ := io.ReadAll(conn); len(b) != 0 {
+		t.Fatalf("a plain member got an answer to KEY: %q", b)
+	}
 }
