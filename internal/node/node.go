@@ -98,6 +98,7 @@ type Node struct {
 	members      map[string]map[string]bool      // node IDs in the signed config per room
 	admins       map[string][]netip.Addr         // room addresses of admins per room (local rooms)
 	cards        map[string]map[string]*peerCard // newest peer card per room and node
+	updateAvail  string                          // a newer signed release ("zpt update")
 	publicSTUN   bool                            // the public STUN check is running
 
 	relayMu     sync.Mutex
@@ -162,7 +163,8 @@ func Start(o Options) (_ *Node, err error) {
 	if o.StatePath != "" {
 		n.disco = newDiscoMgr(n)
 		sock.SetDisco(disco.TagKey(n.disco.pub), n.disco.handle)
-		n.wg.Add(3)
+		n.wg.Add(4)
+		go func() { defer n.wg.Done(); n.updateLoop(ctx) }()
 		go func() { defer n.wg.Done(); n.disco.run(ctx) }()
 		go n.supervise(ctx)
 		go func() { defer n.wg.Done(); n.dhtLoop(ctx) }()

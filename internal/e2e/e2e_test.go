@@ -196,7 +196,7 @@ func (e *env) nodeCfg(name string, locals func(uint16, []netip.Prefix) []netip.A
 	id, _ := identity.Generate()
 	dir := testutil.TempDir(e.t)
 	port := 0
-	cfg := &config.Config{ListenPort: &port, Userspace: true, PublicSTUN: []string{"off"}}
+	cfg := &config.Config{ListenPort: &port, Userspace: true, PublicSTUN: []string{"off"}, UpdateChannel: "off"}
 	if tweak != nil {
 		tweak(cfg)
 	}

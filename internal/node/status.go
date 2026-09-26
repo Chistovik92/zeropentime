@@ -48,6 +48,9 @@ func (n *Node) Status() control.Status {
 	s := control.Status{
 		NodeID: n.ID.NodeID(), Version: n.opts.Version, Started: n.started, UDPPort: n.sock.Port(),
 	}
+	n.mu.Lock()
+	s.UpdateAvailable = n.updateAvail
+	n.mu.Unlock()
 	if st, err := LoadState(n.opts.StatePath); err == nil {
 		for _, o := range st.Off {
 			s.Off = append(s.Off, control.OffRoom{ID: o.ID, Name: o.Name})

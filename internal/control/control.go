@@ -38,6 +38,8 @@ type Status struct {
 	KillSwitch  bool               `json:"kill_switch"`
 	DNS         []netip.Addr       `json:"dns,omitempty"`
 	DNSRoom     string             `json:"dns_room,omitempty"`
+	// UpdateAvailable is a newer signed release found for this node.
+	UpdateAvailable string `json:"update_available,omitempty"`
 	// Off are rooms turned off on this machine ("zpt room off").
 	Off []OffRoom `json:"off,omitempty"`
 }

@@ -102,3 +102,14 @@ func TestIsInvite(t *testing.T) {
 		t.Fatal("IsInvite")
 	}
 }
+
+func TestModelUpdate(t *testing.T) {
+	m := BuildModel(&control.Status{UpdateAvailable: "0.6.3"}, nil)
+	it := find(m.Menu, "Установить обновление 0.6.3")
+	if it == nil || !slices.Equal(it.Action.Args, []string{"update", "-yes"}) {
+		t.Fatalf("%+v", m.Menu)
+	}
+	if find(BuildModel(&control.Status{}, nil).Menu, "Установить обновление") != nil {
+		t.Fatal("no update, no item")
+	}
+}

@@ -85,7 +85,12 @@ func BuildModel(s *control.Status, err error) Model {
 	}
 	m.Tooltip = fmt.Sprintf("zeropentime: %s", roomsWord(len(s.Rooms)))
 	head := "zeropentime — " + roomsWord(len(s.Rooms))
-	m.Menu = append(m.Menu, Item{Title: head, Disabled: true}, sep())
+	m.Menu = append(m.Menu, Item{Title: head, Disabled: true})
+	if s.UpdateAvailable != "" {
+		m.Menu = append(m.Menu, Item{Title: "Установить обновление " + s.UpdateAvailable,
+			Action: Action{Kind: ActZpt, Args: []string{"update", "-yes"}}})
+	}
+	m.Menu = append(m.Menu, sep())
 
 	var exits []Item
 	for _, r := range s.Rooms {

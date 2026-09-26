@@ -52,6 +52,9 @@ type Config struct {
 	// RelayTransport: "auto" (UDP, VLESS + REALITY when UDP is blocked),
 	// "udp" or "vless". Default: auto.
 	RelayTransport string `yaml:"relay_transport"`
+	// UpdateChannel is where updates come from: "stable" (default),
+	// "beta" (also pre-releases) or "off" (no automatic checks).
+	UpdateChannel string `yaml:"update_channel"`
 	// PublicSTUN are STUN servers ("host:port") this node asks for its
 	// external address when it is in rooms without a controller; empty
 	// means DefaultPublicSTUN, ["off"] turns it off.
@@ -197,6 +200,14 @@ func Load(path string) (*Config, error) {
 	return &c, nil
 }
 
+// UpdateChannelName is the update channel with the default filled in.
+func (c *Config) UpdateChannelName() string {
+	if c.UpdateChannel == "" {
+		return "stable"
+	}
+	return c.UpdateChannel
+}
+
 // DefaultPublicSTUN are well-known public STUN servers.
 var DefaultPublicSTUN = []string{"stun.l.google.com:19302", "stun.cloudflare.com:3478"}
 
@@ -256,6 +267,11 @@ func MbitToBytes(m float64) int { return int(m * 125000) }
 func (c *Config) Validate() error {
 	if p := c.Port(); p < 0 || p > 65535 {
 		return fmt.Errorf("listen_port %d out of range", p)
+	}
+	switch c.UpdateChannel {
+	case "", "stable", "beta", "off":
+	default:
+		return fmt.Errorf("update_channel %q: stable, beta or off", c.UpdateChannel)
 	}
 	switch c.ExitNAT {
 	case "", "auto", "kernel", "userspace":

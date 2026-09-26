@@ -61,6 +61,7 @@ const usage = `zpt — zeropentime: децентрализованные вир�
   zpt pubkey  -c КОНФИГ                     публичные ключи узла в статических комнатах
   zpt room new                              секрет статической комнаты (без контроллера)
   zpt room off|on КОМНАТА                   выключить комнату на этом устройстве / включить обратно
+  zpt update  [-check] [-channel stable|beta] [-yes]   проверить и установить подписанное обновление
   zpt open ССЫЛКА                           вступить по ссылке с подтверждением (обработчик zpt://)
 
 Комнаты без контроллера (владелец — этот узел):
@@ -105,6 +106,8 @@ func main() {
 		err = cmdJoin(args)
 	case "open":
 		err = cmdOpen(args)
+	case "update":
+		err = cmdUpdate(args)
 	case "leave":
 		err = cmdLeave(args)
 	case "exit":

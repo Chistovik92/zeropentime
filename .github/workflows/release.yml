@@ -65,6 +65,30 @@ jobs:
           Get-ChildItem msi\*.msi | ForEach-Object { "$((Get-FileHash $_ -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } | Set-Content -Encoding ascii msi\checksums-msi.txt
           gh release upload "$env:GITHUB_REF_NAME" (Get-ChildItem msi\*).FullName --clobber
 
+  # Подпись: release.json с SHA-256 всех файлов релиза и его подпись
+  # ключом релизов (секрет ZPT_RELEASE_KEY) — по ним проверяет обновления zpt.
+  sign:
+    needs: [release, msi]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Подписать и загрузить манифест
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ZPT_RELEASE_KEY: ${{ secrets.ZPT_RELEASE_KEY }}
+        run: |
+          tag="$GITHUB_REF_NAME"; v="${tag#v}"
+          mkdir assets
+          gh release download "$tag" -D assets
+          rm -f assets/release.json assets/release.json.sig
+          pre=""; case "$v" in *-*) pre="-prerelease";; esac
+          go run ./tools/signrelease -version "$v" $pre assets
+          go run ./tools/signrelease -verify -version "$v" assets
+          gh release upload "$tag" assets/release.json assets/release.json.sig --clobber
+
   docker:
     runs-on: ubuntu-latest
     permissions:

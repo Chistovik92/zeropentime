@@ -116,6 +116,12 @@ func cmdStatus(args []string) error {
 		fmt.Fprintf(w, "DNS:\tсистемный\n")
 	}
 	fmt.Fprintf(w, "комнаты:\t%d\n", len(s.Rooms))
+	for _, o := range s.Off {
+		fmt.Fprintf(w, "  выключена:\t%s (zpt room on %s)\n", o.Name, o.Name)
+	}
+	if s.UpdateAvailable != "" {
+		fmt.Fprintf(w, "обновление:\tдоступна версия %s — установить: zpt update\n", s.UpdateAvailable)
+	}
 	w.Flush()
 	if len(s.Rooms) > 0 {
 		fmt.Println()
