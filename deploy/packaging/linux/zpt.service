@@ -1,0 +1,13 @@
+# Узел zeropentime (установлен пакетом deb/rpm). Журнал: journalctl -u zpt -f
+[Unit]
+Description=zeropentime node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/zpt up -c /etc/zeropentime/zpt.yaml
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

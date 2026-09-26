@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=zeropentime
+Comment=Вступить в комнату zeropentime по приглашению
+Exec=/usr/bin/zpt open %u
+Terminal=true
+NoDisplay=true
+MimeType=x-scheme-handler/zpt;
+Categories=Network;

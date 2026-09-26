@@ -85,6 +85,46 @@ archives:
       - README.md
       - CHANGELOG.md
 
+# Пакеты узла для Linux: служба systemd (включается при установке),
+# конфиг /etc/zeropentime/zpt.yaml, обработчик ссылок zpt://.
+nfpms:
+  - id: zpt
+    ids: [zpt-linux]
+    package_name: zeropentime
+    file_name_template: "zeropentime_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    vendor: zeropentime
+    homepage: https://github.com/Chistovik92/zeropentime
+    maintainer: Chistovik92 <Chistovik92@yandex.ru>
+    description: |-
+      Узел zeropentime: виртуальные LAN-комнаты на AmneziaWG.
+      Вступление по ссылке-приглашению: zpt join "zpt://…" или клик по ссылке.
+    license: MPL-2.0
+    formats: [deb, rpm]
+    bindir: /usr/bin
+    section: net
+    contents:
+      - src: deploy/packaging/linux/zpt.service
+        dst: /usr/lib/systemd/system/zpt.service
+      - src: deploy/packaging/linux/zpt-open.desktop
+        dst: /usr/share/applications/zpt-open.desktop
+      - src: deploy/packaging/zpt.yaml
+        dst: /etc/zeropentime/zpt.yaml
+        type: config|noreplace
+        file_info:
+          mode: 0600
+      - dst: /etc/zeropentime
+        type: dir
+        file_info:
+          mode: 0700
+      - src: LICENSE
+        dst: /usr/share/doc/zeropentime/LICENSE
+      - src: LICENSING.md
+        dst: /usr/share/doc/zeropentime/LICENSING.md
+    scripts:
+      postinstall: deploy/packaging/linux/postinstall.sh
+      preremove: deploy/packaging/linux/preremove.sh
+      postremove: deploy/packaging/linux/postremove.sh
+
 checksum:
   name_template: checksums.txt
   algorithm: sha256

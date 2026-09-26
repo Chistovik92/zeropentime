@@ -87,6 +87,94 @@ jobs:
           path: ${{ runner.temp }}/natlab-logs
           if-no-files-found: ignore
 
+  # Установщики ставятся на одноразовые раннеры, проверяются и удаляются.
+  packages-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean
+      - name: deb ставится, служба работает, удаляется
+        run: |
+          set -x
+          sudo apt-get install -y -qq desktop-file-utils rpm >/dev/null
+          deb=$(ls dist/zeropentime_*_linux_amd64.deb)
+          sudo apt-get install -y "./$deb"
+          systemctl is-enabled zpt
+          for i in $(seq 1 20); do systemctl is-active zpt && break; sleep 1; done
+          systemctl is-active zpt
+          zpt version
+          for i in $(seq 1 20); do sudo zpt status && break; sleep 1; done
+          sudo zpt status
+          test "$(sudo stat -c %a /etc/zeropentime)" = 700
+          desktop-file-validate /usr/share/applications/zpt-open.desktop
+          grep -q "x-scheme-handler/zpt" /usr/share/applications/zpt-open.desktop
+          ! echo | zpt open "zpt://nope"
+          sudo apt-get remove -y zeropentime
+          ! systemctl is-active zpt
+          test ! -e /usr/bin/zpt
+          sudo test -f /etc/zeropentime/zpt.yaml
+          rpm -qpl dist/zeropentime_*_linux_amd64.rpm | grep -qx /usr/bin/zpt
+          rpm -qp --scripts dist/zeropentime_*_linux_amd64.rpm | grep -q "systemctl enable zpt.service"
+      - name: Журнал службы
+        if: failure()
+        run: sudo journalctl -u zpt --no-pager | tail -50
+
+  packages-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: bash scripts/fetch-wintun.sh
+      - name: WiX
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add -g WixToolset.Util.wixext/5.0.2
+      - name: Сборка MSI (amd64, arm64)
+        shell: pwsh
+        run: |
+          ./scripts/build-msi.ps1 -Version 0.0.0-ci -Arch amd64 -Out dist
+          ./scripts/build-msi.ps1 -Version 0.0.0-ci -Arch arm64 -Out dist
+      - name: MSI ставится, служба работает, удаляется
+        shell: pwsh
+        run: |
+          $msi = (Resolve-Path dist\zpt_0.0.0-ci_windows_amd64.msi).Path
+          $p = Start-Process msiexec -ArgumentList "/i `"$msi`" /qn /l*v install.log" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content install.log -Tail 60; throw "install: $($p.ExitCode)" }
+          $s = Get-Service zeropentime
+          if ($s.Status -ne "Running") { throw "служба: $($s.Status)" }
+          $exe = "C:\Program Files\zeropentime\zpt.exe"
+          & $exe version
+          for ($i = 0; $i -lt 20; $i++) { & $exe status; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep 1 }
+          if ($LASTEXITCODE -ne 0) { throw "zpt status" }
+          if (-not (Test-Path "C:\Program Files\zeropentime\wintun.dll")) { throw "нет wintun.dll" }
+          if (-not (Test-Path "C:\ProgramData\zeropentime\zpt.yaml")) { throw "нет конфига" }
+          $cmd = (Get-ItemProperty "HKLM:\Software\Classes\zpt\shell\open\command").'(default)'
+          if ($cmd -notlike '*zpt.exe" open "%1"') { throw "обработчик ссылок: $cmd" }
+          if ([Environment]::GetEnvironmentVariable("PATH", "Machine") -notlike "*zeropentime*") { throw "нет в PATH" }
+          $p = Start-Process msiexec -ArgumentList "/x `"$msi`" /qn /l*v uninstall.log" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content uninstall.log -Tail 60; throw "uninstall: $($p.ExitCode)" }
+          if (Get-Service zeropentime -ErrorAction SilentlyContinue) { throw "служба осталась" }
+          if (Test-Path $exe) { throw "zpt.exe остался" }
+          if (-not (Test-Path "C:\ProgramData\zeropentime\zpt.yaml")) { throw "конфиг удалён" }
+      - name: Журналы установки
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: msi-logs
+          path: "*.log"
+          if-no-files-found: ignore
+
   dco:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest

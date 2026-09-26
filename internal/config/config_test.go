@@ -80,3 +80,14 @@ func TestValidateErrors(t *testing.T) {
 		t.Errorf("overlapping subnets: got %v", err)
 	}
 }
+
+// The config the deb/rpm packages and the MSI install has only comments.
+func TestPackagedConfig(t *testing.T) {
+	c, err := Load("../../deploy/packaging/zpt.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Rooms) != 0 || c.Port() != DefaultListenPort {
+		t.Fatalf("packaged config is not empty: %+v", c)
+	}
+}

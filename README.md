@@ -19,7 +19,7 @@ go build -o zpt ./cmd/zpt                        # узел
 go build -o zpt-controller ./cmd/zpt-controller  # контроллер с админ-панелью
 ```
 
-Нужен Go 1.26+. Готовые сборки — на странице [релизов](https://github.com/Chistovik92/zeropentime/releases); архив для Windows уже содержит `wintun.dll`. При сборке из исходников положите `wintun.dll` (https://www.wintun.net) рядом с `zpt.exe` или выполните `bash scripts/fetch-wintun.sh`.
+Нужен Go 1.26+. Готовые сборки — на странице [релизов](https://github.com/Chistovik92/zeropentime/releases): установщики MSI (Windows) и deb/rpm (Linux) ставят узел службой и открывают ссылки `zpt://` одним кликом; архив для Windows уже содержит `wintun.dll`. При сборке из исходников положите `wintun.dll` (https://www.wintun.net) рядом с `zpt.exe` или выполните `bash scripts/fetch-wintun.sh`.
 
 ## Контроллер и админ-панель
 

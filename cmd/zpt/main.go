@@ -66,6 +66,7 @@ const usage = `zpt — zeropentime: децентрализованные вир�
   zpt room invite КОМНАТА [-uses 1] [-hours 24] [-endpoint host:port]   ссылка для zpt join
   zpt room list | zpt room members КОМНАТА | zpt room kick КОМНАТА УЧАСТНИК
   zpt room admin КОМНАТА УЧАСТНИК           сделать участника со-админом (получит ключ подписи)
+  zpt open ССЫЛКА                           вступить по ссылке с подтверждением (обработчик zpt://)
 
   zpt version
 
@@ -101,6 +102,8 @@ func main() {
 		err = cmdPubkey(args)
 	case "join":
 		err = cmdJoin(args)
+	case "open":
+		err = cmdOpen(args)
 	case "leave":
 		err = cmdLeave(args)
 	case "exit":
@@ -285,6 +288,7 @@ func cmdJoin(args []string) error {
 	if err := st.Save(statePath); err != nil {
 		return err
 	}
+	reloadQuiet()
 	fmt.Printf("комната: %s\n", resp.RoomName)
 	switch resp.Status {
 	case "active":
@@ -455,11 +459,14 @@ func runUp(args []string, stop <-chan struct{}) error {
 	if err != nil {
 		return err
 	}
-	id, err := identity.Load(cfg.KeyPath())
-	if errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("нет ключа узла %s — выполните zpt keygen или zpt join", cfg.KeyPath())
-	} else if err != nil {
+	// A fresh install starts the service before any "zpt join": the key is
+	// made on the first start, as join would.
+	id, created, err := loadOrCreateKey(cfg.KeyPath())
+	if err != nil {
 		return err
+	}
+	if created {
+		fmt.Fprintln(os.Stderr, "создан ключ узла", cfg.KeyPath())
 	}
 	if !cfg.Userspace {
 		if err := requireAdmin(); err != nil {
