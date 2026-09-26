@@ -28,6 +28,10 @@ type ExitChoice struct {
 	Off    bool   `json:"off,omitempty"`
 	Room   string `json:"room,omitempty"`   // room ID or name
 	Member string `json:"member,omitempty"` // member name in the room
+	// KillSwitch blocks the internet while the exit is not usable;
+	// AllowLAN keeps the local network reachable meanwhile.
+	KillSwitch bool `json:"kill_switch,omitempty"`
+	AllowLAN   bool `json:"allow_lan,omitempty"`
 }
 
 // ControllerState is one controller the node follows.

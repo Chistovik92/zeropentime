@@ -713,9 +713,6 @@ func (s *Service) netMap(ctx context.Context, nodeID string) (*api.NetMap, error
 					}
 					exit := o.Exit && o.ExitOffered
 					cfg.Members = append(cfg.Members, pki.Member{NodeID: o.NodeID, Name: o.Name, WGKey: k, IP: o.IP, Tags: o.Tags, Routes: routes, Exit: exit, ExitDNS: exit && o.ExitDNS})
-					if exit && o.NodeID == m.UseExit && o.NodeID != nodeID {
-						st.UseExit = o.NodeID
-					}
 					if o.NodeID != nodeID {
 						if _, ok := nm.Peers[o.NodeID]; !ok {
 							n, err := tx.NodeByID(o.NodeID)
@@ -735,6 +732,9 @@ func (s *Service) netMap(ctx context.Context, nodeID string) (*api.NetMap, error
 						}
 					}
 				}
+				// Sent even when that exit is no longer approved: the node
+				// then keeps its kill switch on instead of going direct.
+				st.UseExit = m.UseExit
 				if st.Config, err = pki.SignRoomConfig(ed25519.PrivateKey(r.SignKey), cfg); err != nil {
 					return err
 				}

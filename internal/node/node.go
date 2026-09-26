@@ -79,6 +79,7 @@ type Node struct {
 	changed  chan struct{} // closed and replaced when our reachability changes
 	disco    *discoMgr
 	exitNote string // last explanation why the chosen exit is not used
+	ksKey    string // the kill switch rules in force ("" = off)
 
 	relayMu     sync.Mutex
 	vlessConn   atomic.Pointer[vless.PacketConn]
@@ -206,6 +207,10 @@ func (n *Node) Close() error {
 	for k := range n.rooms {
 		n.stopLocked(k)
 	}
+	if n.ksKey != "" {
+		room.DisableKillSwitch()
+		n.log.Info("kill switch off: the node stops")
+	}
 	n.mu.Unlock()
 	return n.sock.Close()
 }
@@ -290,6 +295,9 @@ func (n *Node) supervise(ctx context.Context) {
 			if pins != prevPins {
 				prevPins = pins
 				n.reapplyAll()
+				n.mu.Lock()
+				n.updateKillSwitchLocked(st)
+				n.mu.Unlock()
 			}
 			want := map[string]bool{}
 			for _, c := range st.Controllers {
@@ -508,6 +516,7 @@ func (n *Node) apply(url string, nm *api.NetMap) {
 			n.log.Error("cannot start room", "room", rc.Name, "err", err)
 		}
 	}
+	n.updateKillSwitchLocked(st)
 }
 
 // roomFromConfig verifies a signed room config and turns it into a local
@@ -617,6 +626,85 @@ func (n *Node) exitPeerLocked(choice *ExitChoice, rs api.RoomState, cfg *pki.Roo
 	}
 	n.exitNote = note
 	return id
+}
+
+// updateKillSwitchLocked keeps the kill switch on while an exit is wanted
+// with it: chosen with "zpt exit -kill-switch", or picked by a room admin
+// with kill_switch in the config. It stays on when that exit is gone or
+// revoked — that is its point — until the choice is withdrawn.
+func (n *Node) updateKillSwitchLocked(st *State) {
+	on, lan := false, false
+	switch c := st.Exit; {
+	case c != nil && !c.Off:
+		on, lan = c.KillSwitch, c.AllowLAN
+	case c == nil && n.opts.Config.KillSwitch:
+		for url, nm := range n.last {
+			for _, rs := range nm.Rooms {
+				if _, pinned := st.RoomKey(url, rs.RoomID); pinned && rs.Status == "active" && rs.UseExit != "" {
+					on = true
+				}
+			}
+		}
+		lan = n.opts.Config.KillSwitchAllowLAN
+	}
+	if n.opts.Config.Userspace {
+		on = false
+	}
+	var rooms []*room.Room
+	var names []string
+	var allowed []netip.Prefix
+	if on {
+		for _, r := range n.rooms {
+			rooms = append(rooms, r.room)
+			names = append(names, r.cfg.Name)
+		}
+		sort.Strings(names)
+		if lan {
+			allowed = n.lanPrefixesLocked()
+		}
+	}
+	key := ""
+	if on {
+		key = fmt.Sprint(names, allowed)
+	}
+	if key == n.ksKey {
+		return
+	}
+	if err := room.SetKillSwitch(on, rooms, allowed); err != nil {
+		n.log.Error("kill switch", "err", err)
+		return
+	}
+	if on && n.ksKey == "" {
+		n.log.Info("kill switch on: the internet goes only through the exit", "allow_lan", lan)
+	} else if !on {
+		n.log.Info("kill switch off")
+	}
+	n.ksKey = key
+}
+
+// lanPrefixesLocked are the networks a kill switch with "allow LAN" keeps
+// reachable: this machine's own networks (not rooms), broadcast, multicast
+// and IPv6 link-local.
+func (n *Node) lanPrefixesLocked() []netip.Prefix {
+	out := []netip.Prefix{
+		netip.MustParsePrefix("224.0.0.0/4"), netip.MustParsePrefix("255.255.255.255/32"),
+		netip.MustParsePrefix("fe80::/10"), netip.MustParsePrefix("ff00::/8"),
+	}
+next:
+	for _, p := range n.localPrefixes() {
+		if p.Addr().IsLoopback() || p.Addr().IsLinkLocalUnicast() || p.Bits() == 0 {
+			continue
+		}
+		for _, r := range n.rooms {
+			if r.cfg.Address.Masked().Overlaps(p) {
+				continue next
+			}
+		}
+		if !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // routeConflictLocked explains why a member's network must not be routed

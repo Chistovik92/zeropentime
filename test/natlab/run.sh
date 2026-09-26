@@ -424,6 +424,44 @@ PY
   if ip -n zhostA rule | grep -q 31344 || ip -n zhostA -6 rule | grep -q 31344; then
     log "ОШИБКА: правила маршрутизации exit не сняты"; FAILED=1
   fi
+
+  # Kill switch: while the exit is revoked A has no internet at all (not
+  # the direct route), the room still works; the internet comes back
+  # through the exit once it is approved again.
+  ip netns exec zhostA "$BIN/zpt" exit -c "$WORK/a.yaml" -kill-switch lab b >/dev/null
+  for _ in $(seq 1 20); do after=$(seen_ip); [ "$after" = 198.51.100.3 ] && break; sleep 1; done
+  log "kill switch: через exit сервер видит A как $after (ожидался 198.51.100.3)"
+  "$BIN/zpt-controller" exit revoke -db "$WORK/c.db" -room "$room" -member b >/dev/null
+  sleep 6
+  after=$(seen_ip)
+  log "kill switch: exit отозван, сервер видит A как $after (ожидалось none)"
+  [ "$after" = none ] || { log "ОШИБКА: kill switch пропустил трафик мимо exit"; FAILED=1; }
+  ip netns exec zhostA ping -c2 -W2 "$ipB" >/dev/null || { log "ОШИБКА: kill switch закрыл комнату"; FAILED=1; }
+  if ip netns exec zhostA ping -c1 -W1 10.0.1.1 >/dev/null 2>&1; then
+    log "ОШИБКА: kill switch без -allow-lan пропустил в локальную сеть"; FAILED=1
+  fi
+  local t0=$SECONDS
+  "$BIN/zpt-controller" exit approve -db "$WORK/c.db" -room "$room" -member b >/dev/null
+  for _ in $(seq 1 30); do after=$(seen_ip); [ "$after" = 198.51.100.3 ] && break; sleep 0.5; done
+  log "kill switch: exit снова одобрен, интернет через B вернулся за $((SECONDS - t0)) с ($after)"
+  [ "$after" = 198.51.100.3 ] && [ $((SECONDS - t0)) -le 10 ] || { log "ОШИБКА: интернет не восстановился за 10 с"; FAILED=1; }
+  ip netns exec zhostA "$BIN/zpt" exit -c "$WORK/a.yaml" -kill-switch -allow-lan lab b >/dev/null
+  "$BIN/zpt-controller" exit revoke -db "$WORK/c.db" -room "$room" -member b >/dev/null
+  sleep 6
+  after=$(seen_ip)
+  if ip netns exec zhostA ping -c1 -W2 10.0.1.1 >/dev/null 2>&1 && [ "$after" = none ]; then
+    log "kill switch с -allow-lan: локальная сеть доступна, интернет закрыт — верно"
+  else
+    log "ОШИБКА: kill switch с -allow-lan (интернет: $after)"; FAILED=1
+  fi
+  ip netns exec zhostA "$BIN/zpt" exit -c "$WORK/a.yaml" off >/dev/null
+  for _ in $(seq 1 20); do after=$(seen_ip); [ "$after" = 198.51.100.2 ] && break; sleep 1; done
+  log "kill switch: после zpt exit off сервер видит A как $after (ожидался 198.51.100.2)"
+  [ "$after" = 198.51.100.2 ] || { log "ОШИБКА: после zpt exit off интернет не вернулся"; FAILED=1; }
+  if ip netns exec zhostA nft list tables | grep -q zpt_killswitch; then
+    log "ОШИБКА: правила kill switch не сняты"; FAILED=1
+  fi
+  [ "$FAILED" = 0 ] || dump
 }
 
 trap cleanup EXIT

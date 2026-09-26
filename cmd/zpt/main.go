@@ -23,6 +23,7 @@ import (
 	"github.com/Chistovik92/zeropentime/internal/netmark"
 	"github.com/Chistovik92/zeropentime/internal/node"
 	"github.com/Chistovik92/zeropentime/internal/obfs"
+	"github.com/Chistovik92/zeropentime/internal/room"
 )
 
 var version = "0.3.3-dev"
@@ -33,7 +34,9 @@ const usage = `zpt — zeropentime: децентрализованные вир�
   zpt keygen  [-key ФАЙЛ]                  создать ключ узла (если его ещё нет)
   zpt join    [-c КОНФИГ] [-name ИМЯ] ССЫЛКА  вступить в комнату по приглашению
   zpt leave   [-c КОНФИГ] ID_КОМНАТЫ        выйти из комнаты
-  zpt exit    [-c КОНФИГ] КОМНАТА УЧАСТНИК  выходить в интернет через участника комнаты (exit-узел)
+  zpt exit    [-c КОНФИГ] [-kill-switch [-allow-lan]] КОМНАТА УЧАСТНИК
+                                           выходить в интернет через участника комнаты (exit-узел);
+                                           -kill-switch: без exit интернета нет, -allow-lan: кроме своей LAN
   zpt exit    [-c КОНФИГ] off|auto          не использовать exit | как назначил админ комнаты
   zpt exit    [-c КОНФИГ]                   показать выбор
   zpt up      [-c КОНФИГ]                   запустить узел
@@ -272,6 +275,8 @@ func cmdLeave(args []string) error {
 func cmdExit(args []string) error {
 	fl := flag.NewFlagSet("exit", flag.ExitOnError)
 	cfgPath, explicit := configFlag(fl)
+	ks := fl.Bool("kill-switch", false, "блокировать интернет, пока exit недоступен")
+	lan := fl.Bool("allow-lan", false, "с -kill-switch: оставить доступ к своей локальной сети")
 	fl.Parse(args)
 	cfg, err := nodeConfig(*cfgPath, explicit())
 	if err != nil {
@@ -291,14 +296,22 @@ func cmdExit(args []string) error {
 			fmt.Println("exit-узел: не используется")
 		default:
 			fmt.Printf("exit-узел: %s в комнате %s\n", x.Member, x.Room)
+			if x.KillSwitch {
+				fmt.Println("kill switch: включён, локальная сеть:", map[bool]string{true: "доступна", false: "закрыта"}[x.AllowLAN])
+			}
 		}
 		return nil
 	case fl.NArg() == 1 && fl.Arg(0) == "off":
 		st.Exit = &node.ExitChoice{Off: true}
+		room.DisableKillSwitch() // also rules left by a node that crashed
 	case fl.NArg() == 1 && fl.Arg(0) == "auto":
 		st.Exit = nil
+		room.DisableKillSwitch()
 	case fl.NArg() == 2:
-		st.Exit = &node.ExitChoice{Room: fl.Arg(0), Member: fl.Arg(1)}
+		if *lan && !*ks {
+			return errors.New("-allow-lan имеет смысл только вместе с -kill-switch")
+		}
+		st.Exit = &node.ExitChoice{Room: fl.Arg(0), Member: fl.Arg(1), KillSwitch: *ks, AllowLAN: *lan}
 	default:
 		return errors.New("использование: zpt exit [КОМНАТА УЧАСТНИК | off | auto]")
 	}

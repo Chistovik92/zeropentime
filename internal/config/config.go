@@ -56,8 +56,13 @@ type Config struct {
 	AdvertiseRoutes []netip.Prefix `yaml:"advertise_routes"`
 	// AdvertiseExit offers this node as an exit to the internet for the
 	// rooms it is in (Linux only for now); room admins approve it.
-	AdvertiseExit bool   `yaml:"advertise_exit"`
-	Rooms         []Room `yaml:"rooms"`
+	AdvertiseExit bool `yaml:"advertise_exit"`
+	// KillSwitch blocks the internet while an exit picked by a room admin
+	// is not usable (for "zpt exit" choices it is a flag of that command);
+	// KillSwitchAllowLAN keeps the local network reachable meanwhile.
+	KillSwitch         bool   `yaml:"kill_switch"`
+	KillSwitchAllowLAN bool   `yaml:"kill_switch_allow_lan"`
+	Rooms              []Room `yaml:"rooms"`
 }
 
 // Room is one virtual LAN this node is a member of.

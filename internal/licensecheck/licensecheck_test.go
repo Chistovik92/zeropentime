@@ -32,7 +32,15 @@ func repoRoot(t *testing.T) string {
 	return root
 }
 
+// mitDirs are third-party code kept under its own MIT license.
+var mitDirs = []string{"internal/wgfirewall"}
+
 func wantLicense(rel string) string {
+	for _, d := range mitDirs {
+		if strings.HasPrefix(rel, d+"/") {
+			return "MIT"
+		}
+	}
 	for _, d := range agplDirs {
 		if rel == d || strings.HasPrefix(rel, d+"/") {
 			return "AGPL-3.0-only"
@@ -84,7 +92,7 @@ func TestNodeDoesNotLinkAGPL(t *testing.T) {
 		}
 		for _, pkg := range strings.Fields(string(out)) {
 			rel, ok := strings.CutPrefix(pkg, module+"/")
-			if ok && wantLicense(rel) != "MPL-2.0" {
+			if ok && wantLicense(rel) == "AGPL-3.0-only" {
 				t.Errorf("%s depends on AGPL package %s", target, pkg)
 			}
 		}

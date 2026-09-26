@@ -121,7 +121,8 @@ type RoomState struct {
 	Config *pki.Signed `json:"config,omitempty"` // only when active
 	// UseExit is the node ID of the exit a room admin picked for this
 	// node. The node uses it only if that member is an approved exit in
-	// the signed config, and a choice made on the node itself wins.
+	// the signed config (otherwise it only keeps a kill switch on), and a
+	// choice made on the node itself wins.
 	UseExit string `json:"use_exit,omitempty"`
 }
 
