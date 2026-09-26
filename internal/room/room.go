@@ -364,6 +364,9 @@ func (r *Room) Exit() (bool, []netip.Addr) {
 	return r.exit, slices.Clone(r.dns)
 }
 
+// Ifname is the OS interface of the room ("netstack" in userspace mode).
+func (r *Room) Ifname() string { return r.ifname }
+
 // Close tears the room down.
 func (r *Room) Close() {
 	r.mu.Lock()

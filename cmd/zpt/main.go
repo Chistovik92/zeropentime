@@ -9,17 +9,20 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/netip"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/Chistovik92/zeropentime/internal/api"
 	"github.com/Chistovik92/zeropentime/internal/client"
 	"github.com/Chistovik92/zeropentime/internal/config"
+	"github.com/Chistovik92/zeropentime/internal/control"
 	"github.com/Chistovik92/zeropentime/internal/identity"
 	"github.com/Chistovik92/zeropentime/internal/netmark"
 	"github.com/Chistovik92/zeropentime/internal/node"
@@ -43,7 +46,17 @@ const usage = `zpt — zeropentime: децентрализованные вир�
   zpt dns     [-c КОНФИГ] IP [IP...]         свой DNS-сервер для всех имён (в комнате, в сети за узлом или в интернете)
   zpt dns     [-c КОНФИГ] off|auto          не брать DNS комнат | как в конфиге и комнатах
   zpt dns     [-c КОНФИГ]                   показать выбор
-  zpt up      [-c КОНФИГ]                   запустить узел
+  zpt up      [-c КОНФИГ]                   запустить узел в этом терминале
+
+Работающий узел:
+  zpt status  [-json]                       состояние: контроллеры, NAT, relay, exit, kill switch, DNS, комнаты
+  zpt rooms   [-json]                       комнаты
+  zpt peers   [КОМНАТА] [-json]             пиры: напрямую / через relay, RTT, рукопожатие, трафик
+
+Служба (Linux — systemd, Windows — служба Windows):
+  zpt service install [-c КОНФИГ]           установить и запустить (автозапуск при загрузке)
+  zpt service uninstall|start|stop|restart|status
+  zpt logs    [-f] [-n 50]                  журнал службы (-f — следить)
   zpt pubkey  -c КОНФИГ                     публичные ключи узла в статических комнатах
   zpt room new                              секрет статической комнаты (без контроллера)
 
@@ -52,7 +65,21 @@ const usage = `zpt — zeropentime: децентрализованные вир�
 Контроллер с админ-панелью — отдельная программа zpt-controller.
 `
 
+// logOut is stderr, or the log file when running as a Windows service.
+var logOut io.Writer = os.Stderr
+
 func main() {
+	if runningAsService() {
+		if f, err := openServiceLog(); err == nil {
+			logOut, os.Stderr = f, f
+		}
+		err := serveAsService(func(stop <-chan struct{}) error { return runUp(os.Args[2:], stop) })
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "ошибка:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) < 2 {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -71,6 +98,16 @@ func main() {
 		err = cmdLeave(args)
 	case "exit":
 		err = cmdExit(args)
+	case "status":
+		err = cmdStatus(args)
+	case "rooms":
+		err = cmdRooms(args)
+	case "peers":
+		err = cmdPeers(args)
+	case "service":
+		err = cmdService(args)
+	case "logs":
+		err = cmdLogs(args)
 	case "dns":
 		err = cmdDNS(args)
 	case "up":
@@ -98,7 +135,7 @@ func newLogger(level string) (*slog.Logger, error) {
 			return nil, fmt.Errorf("log_level: %w", err)
 		}
 	}
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: l})), nil
+	return slog.New(slog.NewTextHandler(logOut, &slog.HandlerOptions{Level: l})), nil
 }
 
 func cmdKeygen(args []string) error {
@@ -325,10 +362,9 @@ func cmdExit(args []string) error {
 		return err
 	}
 	if st.Exit != nil && !st.Exit.Off {
-		fmt.Println("сохранено; запущенный узел применит выбор за пару секунд (участник должен быть одобрен как exit-узел)")
-	} else {
-		fmt.Println("сохранено; запущенный узел применит выбор за пару секунд")
+		fmt.Println("участник должен быть одобрен админом как exit-узел; проверить — zpt status")
 	}
+	reloadNode()
 	return nil
 }
 
@@ -378,11 +414,23 @@ func cmdDNS(args []string) error {
 	if err := st.Save(statePath); err != nil {
 		return err
 	}
-	fmt.Println("сохранено; запущенный узел применит за пару секунд")
+	reloadNode()
 	return nil
 }
 
 func cmdUp(args []string) error {
+	stop := make(chan struct{})
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sig
+		close(stop)
+	}()
+	return runUp(args, stop)
+}
+
+// runUp runs the node until stop is closed (Ctrl+C, SIGTERM, service stop).
+func runUp(args []string, stop <-chan struct{}) error {
 	fl := flag.NewFlagSet("up", flag.ExitOnError)
 	cfgPath, explicit := configFlag(fl)
 	fl.Parse(args)
@@ -408,17 +456,101 @@ func cmdUp(args []string) error {
 	}
 	statePath := node.StatePath(cfg.KeyPath())
 	if st, err := node.LoadState(statePath); err == nil && len(st.Controllers) == 0 && len(cfg.Rooms) == 0 {
-		return errors.New("нет ни одной комнаты: вступите по приглашению (zpt join) или опишите комнаты в конфиге")
+		if !runningAsService() && !underSystemd() {
+			return errors.New("нет ни одной комнаты: вступите по приглашению (zpt join) или опишите комнаты в конфиге")
+		}
+		log.Warn("нет ни одной комнаты: узел ждёт zpt join")
 	}
 	n, err := node.Start(node.Options{Config: cfg, Identity: id, Log: log, StatePath: statePath, Version: version})
 	if err != nil {
 		return err
 	}
 	defer n.Close()
-
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	<-sig
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		if err := control.Serve(ctx, n); err != nil {
+			log.Warn("канал управления недоступен: zpt status и мгновенное применение zpt exit / dns не работают", "err", err)
+		}
+	}()
+	<-stop
 	log.Info("остановка")
 	return nil
+}
+
+// underSystemd reports whether systemd started the node (it sets INVOCATION_ID).
+func underSystemd() bool { return os.Getenv("INVOCATION_ID") != "" }
+
+func openServiceLog() (*os.File, error) {
+	p := logFile()
+	if p == "" {
+		return nil, errors.New("no log file")
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return nil, err
+	}
+	if fi, err := os.Stat(p); err == nil && fi.Size() > 10<<20 {
+		os.Rename(p, p+".old")
+	}
+	return os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+}
+
+func cmdService(args []string) error {
+	if len(args) == 0 {
+		return errors.New("использование: zpt service install [-c КОНФИГ] | uninstall | start | stop | restart | status")
+	}
+	action, args := args[0], args[1:]
+	if action != "install" {
+		return serviceControl2(action)
+	}
+	fl := flag.NewFlagSet("service install", flag.ExitOnError)
+	cfgPath := fl.String("c", defaultConfigPath, "конфиг узла для службы")
+	fl.Parse(args)
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if exe, err = filepath.Abs(exe); err != nil {
+		return err
+	}
+	cfg, err := filepath.Abs(*cfgPath)
+	if err != nil {
+		return err
+	}
+	if err := ensureConfigDir(cfg); err != nil {
+		return err
+	}
+	if _, err := os.Stat(cfg); errors.Is(err, fs.ErrNotExist) {
+		if err := os.WriteFile(cfg, []byte("# Конфиг узла zeropentime: docs/GUIDE.md, раздел 14.\n"), 0o644); err != nil {
+			return err
+		}
+	}
+	if err := serviceInstall(exe, cfg); err != nil {
+		return err
+	}
+	fmt.Println("служба установлена и запущена; конфиг:", cfg)
+	fmt.Printf("команды join, exit, dns, leave запускайте с тем же конфигом: zpt join -c %s \"ссылка\"\n", cfg)
+	return nil
+}
+
+func serviceControl2(action string) error {
+	switch action {
+	case "uninstall":
+		if err := serviceUninstall(); err != nil {
+			return err
+		}
+		fmt.Println("служба удалена")
+		return nil
+	case "start", "stop", "restart", "status":
+		return serviceControl(action)
+	}
+	return fmt.Errorf("неизвестное действие %q: install, uninstall, start, stop, restart, status", action)
+}
+
+func cmdLogs(args []string) error {
+	fl := flag.NewFlagSet("logs", flag.ExitOnError)
+	follow := fl.Bool("f", false, "следить за новыми строками")
+	lines := fl.Int("n", 50, "сколько последних строк показать")
+	fl.Parse(args)
+	return showLogs(*follow, *lines)
 }

@@ -833,4 +833,20 @@ func TestRoomDNS(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, 10*time.Second, "room DNS cleared", dnsIs("[]"))
+
+	// 0.3.5: what "zpt status" and "zpt peers" show.
+	eventually(t, 15*time.Second, "status shows the peer", func() error {
+		s := a.node.Status()
+		if len(s.Rooms) != 1 || s.Rooms[0].Name != "game" || len(s.Rooms[0].Peers) != 1 {
+			return fmt.Errorf("rooms %+v", s.Rooms)
+		}
+		p := s.Rooms[0].Peers[0]
+		if p.Name != "bob" || p.IP != bobIP || p.Path != "direct" || p.NodeID != b.id.NodeID() {
+			return fmt.Errorf("peer %+v", p)
+		}
+		if len(s.Controllers) != 1 || s.Controllers[0].LastSync.IsZero() {
+			return fmt.Errorf("controllers %+v", s.Controllers)
+		}
+		return nil
+	})
 }

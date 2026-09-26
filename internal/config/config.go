@@ -101,6 +101,9 @@ type Room struct {
 	ExitDNS netip.Addr `yaml:"-"`
 	// RoomDNS are the room's own DNS servers (set by a room admin).
 	RoomDNS []netip.Addr `yaml:"-"`
+	// PeerNodes maps peer keys to node IDs; ExitPeer is the exit's node ID.
+	PeerNodes map[identity.Key]string `yaml:"-"`
+	ExitPeer  string                  `yaml:"-"`
 }
 
 // Obfuscation overrides AmneziaWG parameters that may differ between members

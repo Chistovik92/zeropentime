@@ -15,7 +15,6 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/Chistovik92/zeropentime/internal/controller"
 	"github.com/Chistovik92/zeropentime/internal/store"
@@ -25,19 +24,31 @@ var version = "0.3.5-dev"
 
 const usage = `zpt-controller — контроллер zeropentime (админ-панель + API для узлов)
 
-  zpt-controller serve   -db ФАЙЛ [-listen :8080] [-url https://...] [-tls-cert Ф -tls-key Ф] [-trust-proxy]
-                         [-stun :3478,:3479] [-stun-public host:3478,host:3479] [-relay :3480] [-relay-public host:3480]
-                         [-vless :443 -vless-dest www.example.com:443 [-vless-sni ...] [-vless-public host:443]]
-  zpt-controller useradd -db ФАЙЛ -login ЛОГИН [-admin]
-  zpt-controller room create   -db ФАЙЛ -owner ЛОГИН -name ИМЯ [-subnet 10.100.1.0/24] [-policy manual|auto]
-  zpt-controller room list     -db ФАЙЛ
-  zpt-controller room dns      -db ФАЙЛ -room ID -servers "10.100.1.5, 9.9.9.9"  (пусто — убрать)
-  zpt-controller invite create -db ФАЙЛ -room ID -url https://... [-uses 1] [-hours 24] [-auto] [-note ТЕКСТ]
-  zpt-controller routes approve|revoke -db ФАЙЛ -room ID -member ИМЯ
-  zpt-controller exit approve|revoke   -db ФАЙЛ -room ID -member ИМЯ
-  zpt-controller exit use -db ФАЙЛ -room ID -member ИМЯ [-via ИМЯ_EXIT]  (без -via — напрямую)
-  zpt-controller passwd  -db ФАЙЛ -login ЛОГИН
+Сервер:
+  zpt-controller serve -db ФАЙЛ [-listen :8080] [-url https://...] [-tls-cert Ф -tls-key Ф] [-trust-proxy]
+                       [-stun :3478,:3479] [-stun-public host:3478,host:3479] [-relay :3480] [-relay-public host:3480]
+                       [-vless :443 -vless-dest www.example.com:443 [-vless-sni ...] [-vless-public host:443]]
   zpt-controller version
+
+Управление из терминала (всё, что есть в панели; работает и при запущенном сервере).
+У всех команд: -db ФАЙЛ; -room — ID или название комнаты; -member — имя или ID узла;
+у команд просмотра -json — вывод для скриптов.
+  room create  -owner ЛОГИН -name ИМЯ [-subnet 10.100.1.0/24] [-policy manual|auto]
+  room list | room show -room R
+  room set     -room R [-name ИМЯ] [-policy manual|auto] [-broadcast on|off|mdns]
+  room dns     -room R -servers "10.100.1.5, 9.9.9.9"      (пусто — убрать)
+  room delete  -room R
+  member list  -room R
+  member approve|ban|unban|kick -room R -member M
+  member set   -room R -member M [-name ИМЯ] [-ip IP] [-tags "a,b"]
+  invite create -room R -url https://... [-uses 1] [-hours 24] [-auto] [-note ТЕКСТ]
+  invite list  -room R | invite revoke -room R -id N
+  routes approve|revoke -room R -member M                 сети за узлом
+  exit approve|revoke   -room R -member M                 exit-узел
+  exit use     -room R -member M [-via EXIT]              назначить exit (без -via — напрямую)
+  user add -login ЛОГИН [-admin] | user list | user delete -login ЛОГИН | user passwd -login ЛОГИН
+  audit [-n 50]                                           журнал действий
+  useradd / passwd -login ЛОГИН                           то же, что user add / user passwd
 `
 
 func main() {
@@ -122,7 +133,7 @@ func run(sub string, args []string) error {
 		}
 		fmt.Printf("новый пароль для %s: %s\n", *login, pw)
 		return nil
-	case "room", "invite", "routes", "exit":
+	case "room", "member", "invite", "routes", "exit", "user", "audit":
 		return runAdmin(sub, args)
 	case "version":
 		fmt.Println("zpt-controller", version)
@@ -134,141 +145,6 @@ func run(sub string, args []string) error {
 	return errors.New("неизвестная команда " + sub + "\n\n" + usage)
 }
 
-// runAdmin handles "room ..." and "invite ..." for scripts and automation.
-// It works on the database directly, also while the server is running.
-func runAdmin(sub string, args []string) error {
-	if len(args) == 0 {
-		return errors.New("использование:\n" + usage)
-	}
-	action, args := args[0], args[1:]
-	fl := flag.NewFlagSet(sub+" "+action, flag.ExitOnError)
-	db := fl.String("db", "zpt-controller.db", "файл базы данных")
-	ctx := context.Background()
-	switch sub + " " + action {
-	case "room create":
-		owner := fl.String("owner", "", "логин владельца комнаты")
-		name := fl.String("name", "", "название комнаты")
-		subnet := fl.String("subnet", "", "подсеть (по умолчанию выбирается сама)")
-		policy := fl.String("policy", "manual", "вступление: manual (с одобрением) или auto")
-		fl.Parse(args)
-		svc, closeDB, err := openService(*db, slog.New(slog.DiscardHandler))
-		if err != nil {
-			return err
-		}
-		defer closeDB()
-		u, err := svc.UserByLogin(ctx, *owner)
-		if err != nil {
-			return fmt.Errorf("пользователь %q не найден", *owner)
-		}
-		r, err := svc.CreateRoom(ctx, u, *name, *subnet, *policy)
-		if err != nil {
-			return err
-		}
-		fmt.Printf("room id: %s\nsubnet:  %s\n", r.ID, r.Subnet)
-		return nil
-	case "room list":
-		fl.Parse(args)
-		svc, closeDB, err := openService(*db, slog.New(slog.DiscardHandler))
-		if err != nil {
-			return err
-		}
-		defer closeDB()
-		rooms, err := svc.Rooms(ctx, &store.User{IsAdmin: true})
-		if err != nil {
-			return err
-		}
-		for _, r := range rooms {
-			fmt.Printf("%s  %-18s  %s\n", r.ID, r.Subnet, r.Name)
-		}
-		return nil
-	case "room dns":
-		room := fl.String("room", "", "ID комнаты")
-		servers := fl.String("servers", "", "DNS-серверы через запятую (пусто — убрать)")
-		fl.Parse(args)
-		svc, closeDB, err := openService(*db, slog.New(slog.DiscardHandler))
-		if err != nil {
-			return err
-		}
-		defer closeDB()
-		if err := svc.SetRoomDNS(ctx, &store.User{IsAdmin: true, Login: "cli"}, *room, *servers); err != nil {
-			return err
-		}
-		fmt.Println("готово")
-		return nil
-	case "invite create":
-		room := fl.String("room", "", "ID комнаты")
-		pub := fl.String("url", "", "внешний адрес контроллера, например https://zpt.example.org")
-		uses := fl.Int("uses", 1, "сколько раз можно использовать (0 — без ограничений)")
-		hours := fl.Int("hours", 24, "срок действия, часов")
-		auto := fl.Bool("auto", false, "вступление без одобрения")
-		note := fl.String("note", "", "заметка")
-		fl.Parse(args)
-		if *pub == "" {
-			return errors.New("нужен -url: по нему узлы найдут контроллер")
-		}
-		svc, closeDB, err := openService(*db, slog.New(slog.DiscardHandler))
-		if err != nil {
-			return err
-		}
-		defer closeDB()
-		inv, err := svc.CreateInvite(ctx, &store.User{IsAdmin: true, Login: "cli"}, strings.TrimRight(*pub, "/"), *room,
-			*uses, time.Duration(*hours)*time.Hour, *auto, *note)
-		if err != nil {
-			return err
-		}
-		fmt.Println(inv.String())
-		return nil
-	}
-	if (sub == "routes" || sub == "exit") && (action == "approve" || action == "revoke" || action == "use" && sub == "exit") {
-		room := fl.String("room", "", "ID комнаты")
-		name := fl.String("member", "", "имя участника")
-		via := fl.String("via", "", "имя exit-узла (exit use)")
-		fl.Parse(args)
-		svc, closeDB, err := openService(*db, slog.New(slog.DiscardHandler))
-		if err != nil {
-			return err
-		}
-		defer closeDB()
-		admin := &store.User{IsAdmin: true, Login: "cli"}
-		v, err := svc.Room(ctx, admin, *room)
-		if err != nil {
-			return err
-		}
-		act := map[string]controller.MemberAction{"routesapprove": controller.ActRoutes, "routesrevoke": controller.ActNoRoutes,
-			"exitapprove": controller.ActExit, "exitrevoke": controller.ActNoExit}[sub+action]
-		viaID := ""
-		if *via != "" {
-			for _, m := range v.Members {
-				if m.Name == *via {
-					viaID = m.NodeID
-				}
-			}
-			if viaID == "" {
-				return fmt.Errorf("в комнате нет участника %q", *via)
-			}
-		}
-		for _, m := range v.Members {
-			if m.Name == *name {
-				if action == "use" {
-					if err := svc.SetMemberExit(ctx, admin, *room, m.NodeID, viaID); err != nil {
-						return err
-					}
-					fmt.Println("готово")
-					return nil
-				}
-				if err := svc.MemberAction(ctx, admin, *room, m.NodeID, act); err != nil {
-					return err
-				}
-				fmt.Println("готово")
-				return nil
-			}
-		}
-		return fmt.Errorf("в комнате нет участника %q", *name)
-	}
-	return fmt.Errorf("неизвестная команда %s %s", sub, action)
-}
-
-// sniList defaults the REALITY server names to the destination host.
 func sniList(sni, dest string) []string {
 	if l := splitList(sni); len(l) > 0 {
 		return l

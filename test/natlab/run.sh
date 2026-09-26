@@ -128,8 +128,16 @@ portmap: false
 log_level: debug
 EOF
   [ -n "$extra" ] && echo "$extra" >>"$WORK/$name.yaml"
-  ip netns exec "$ns" "$BIN/zpt" join -c "$WORK/$name.yaml" -name "$name" "$inv" >"$WORK/$name.join.log" 2>&1
-  ip netns exec "$ns" "$BIN/zpt" up -c "$WORK/$name.yaml" >"$WORK/$name.log" 2>&1 &
+  zpt_on "$ns" "$name" join -c "$WORK/$name.yaml" -name "$name" "$inv" >"$WORK/$name.join.log" 2>&1
+  zpt_on "$ns" "$name" up -c "$WORK/$name.yaml" >"$WORK/$name.log" 2>&1 &
+}
+
+# zpt_on HOST_NS NAME ARGS...: zpt of that node (each node has its own
+# control socket: both run on one file system).
+zpt_on() {
+  local ns=$1 name=$2
+  shift 2
+  ip netns exec "$ns" env ZPT_CONTROL="$WORK/$name.sock" "$BIN/zpt" "$@"
 }
 
 # Both helpers may find nothing yet: that is not an error.
@@ -248,6 +256,17 @@ run_case() {
   fi
   if [ "$ok" = yes ] && [ "$CASE" = cone-cone ]; then
     test_broadcast "$ipA" "$ipB"
+    # Terminal management: the running node answers zpt status / peers.
+    zpt_on zhostA a status >"$WORK/status.txt" 2>&1 || true
+    zpt_on zhostA a peers -json >"$WORK/peers.json" 2>&1 || true
+    zpt_on zhostA a peers >"$WORK/peers.txt" 2>&1 || true
+    sed 's/^/[natlab-out] /' "$WORK/status.txt" "$WORK/peers.txt"
+    log "zpt status: $(grep -c . "$WORK/status.txt") строк; комната: $(grep -o 'lab .*' "$WORK/status.txt" | head -1)"
+    if grep -q "контроллер:.*связь есть" "$WORK/status.txt" && grep -q '"path": "direct"' "$WORK/peers.json" && grep -q '"name": "b"' "$WORK/peers.json"; then
+      log "zpt status и zpt peers показывают контроллер и прямую связь с B — верно"
+    else
+      log "ОШИБКА: zpt status / peers"; cat "$WORK/status.txt" "$WORK/peers.json"; FAILED=1
+    fi
   fi
   if [ "$ok" = yes ]; then
     # Real traffic over the tunnel in both directions.
@@ -374,7 +393,7 @@ exit_dns_upstreams: [$CTRL_IP]"
     "$BIN/zpt-controller" exit approve -db "$WORK/c.db" -room "$room" -member b >/dev/null 2>&1 && break
     sleep 1 # B has not offered itself yet
   done
-  ip netns exec zhostA "$BIN/zpt" exit -c "$WORK/a.yaml" lab b >/dev/null
+  zpt_on zhostA a exit -c "$WORK/a.yaml" lab b >/dev/null
   for _ in $(seq 1 30); do after=$(seen_ip); [ "$after" = 198.51.100.3 ] && break; sleep 1; done
   log "через exit сервер видит A как $after (ожидался 198.51.100.3)"
   if [ "$after" != 198.51.100.3 ]; then
@@ -419,18 +438,22 @@ PY
   [ "$after" = 198.51.100.2 ] || { log "ОШИБКА: после отзыва трафик не вернулся на прямой путь"; FAILED=1; dump; return; }
   "$BIN/zpt-controller" exit approve -db "$WORK/c.db" -room "$room" -member b >/dev/null
   for _ in $(seq 1 20); do after=$(seen_ip); [ "$after" = 198.51.100.3 ] && break; sleep 1; done
-  ip netns exec zhostA "$BIN/zpt" exit -c "$WORK/a.yaml" off >/dev/null
+  zpt_on zhostA a exit -c "$WORK/a.yaml" off >/dev/null
   for _ in $(seq 1 20); do after=$(seen_ip); [ "$after" = 198.51.100.2 ] && break; sleep 1; done
   log "после zpt exit off сервер видит A как $after (ожидался 198.51.100.2)"
   [ "$after" = 198.51.100.2 ] || { log "ОШИБКА: zpt exit off не вернул прямой путь"; FAILED=1; dump; return; }
-  if ip -n zhostA rule | grep -q 31344 || ip -n zhostA -6 rule | grep -q 31344; then
-    log "ОШИБКА: правила маршрутизации exit не сняты"; FAILED=1
-  fi
+  # The route goes first, then the rules: give the node a moment.
+  local left=yes
+  for _ in $(seq 1 10); do
+    if ! ip -n zhostA rule | grep -q 31344 && ! ip -n zhostA -6 rule | grep -q 31344; then left=no; break; fi
+    sleep 0.5
+  done
+  [ "$left" = no ] || { log "ОШИБКА: правила маршрутизации exit не сняты"; FAILED=1; }
 
   # Kill switch: while the exit is revoked A has no internet at all (not
   # the direct route), the room still works; the internet comes back
   # through the exit once it is approved again.
-  ip netns exec zhostA "$BIN/zpt" exit -c "$WORK/a.yaml" -kill-switch lab b >/dev/null
+  zpt_on zhostA a exit -c "$WORK/a.yaml" -kill-switch lab b >/dev/null
   for _ in $(seq 1 20); do after=$(seen_ip); [ "$after" = 198.51.100.3 ] && break; sleep 1; done
   log "kill switch: через exit сервер видит A как $after (ожидался 198.51.100.3)"
   "$BIN/zpt-controller" exit revoke -db "$WORK/c.db" -room "$room" -member b >/dev/null
@@ -447,7 +470,7 @@ PY
   for _ in $(seq 1 30); do after=$(seen_ip); [ "$after" = 198.51.100.3 ] && break; sleep 0.5; done
   log "kill switch: exit снова одобрен, интернет через B вернулся за $((SECONDS - t0)) с ($after)"
   [ "$after" = 198.51.100.3 ] && [ $((SECONDS - t0)) -le 10 ] || { log "ОШИБКА: интернет не восстановился за 10 с"; FAILED=1; }
-  ip netns exec zhostA "$BIN/zpt" exit -c "$WORK/a.yaml" -kill-switch -allow-lan lab b >/dev/null
+  zpt_on zhostA a exit -c "$WORK/a.yaml" -kill-switch -allow-lan lab b >/dev/null
   "$BIN/zpt-controller" exit revoke -db "$WORK/c.db" -room "$room" -member b >/dev/null
   sleep 6
   after=$(seen_ip)
@@ -456,7 +479,7 @@ PY
   else
     log "ОШИБКА: kill switch с -allow-lan (интернет: $after)"; FAILED=1
   fi
-  ip netns exec zhostA "$BIN/zpt" exit -c "$WORK/a.yaml" off >/dev/null
+  zpt_on zhostA a exit -c "$WORK/a.yaml" off >/dev/null
   for _ in $(seq 1 20); do after=$(seen_ip); [ "$after" = 198.51.100.2 ] && break; sleep 1; done
   log "kill switch: после zpt exit off сервер видит A как $after (ожидался 198.51.100.2)"
   [ "$after" = 198.51.100.2 ] || { log "ОШИБКА: после zpt exit off интернет не вернулся"; FAILED=1; }

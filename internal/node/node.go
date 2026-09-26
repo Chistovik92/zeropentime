@@ -81,6 +81,9 @@ type Node struct {
 	exitNote string // last explanation why the chosen exit is not used
 	ksKey    string // the kill switch rules in force ("" = off)
 	dnsNote  string // last DNS warning (logged once)
+	syncs    map[string]syncInfo
+	started  time.Time
+	wake     chan struct{} // Reload
 
 	relayMu     sync.Mutex
 	vlessConn   atomic.Pointer[vless.PacketConn]
@@ -119,6 +122,7 @@ func Start(o Options) (_ *Node, err error) {
 		ID: o.Identity, opts: o, log: o.Log, sock: sock, ctx: ctx, cancel: cancel,
 		rooms: map[string]*running{}, versions: map[string]int64{}, pending: map[string]string{}, last: map[string]*api.NetMap{},
 		reports: map[string]netcheck.Report{}, changed: make(chan struct{}),
+		syncs: map[string]syncInfo{}, started: time.Now(), wake: make(chan struct{}, 1),
 	}
 	defer func() {
 		if err != nil {
@@ -330,6 +334,7 @@ func (n *Node) supervise(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-time.After(stateCheckEvery):
+		case <-n.wake:
 		}
 	}
 }
@@ -366,6 +371,7 @@ func (n *Node) sync(ctx context.Context, url string) {
 			if woken.Load() {
 				continue // our address changed: report it right away
 			}
+			n.noteSync(url, err)
 			log.Warn("controller unreachable, rooms keep running", "err", err, "retry_in", backoff)
 			select {
 			case <-ctx.Done():
@@ -376,6 +382,7 @@ func (n *Node) sync(ctx context.Context, url string) {
 			continue
 		}
 		backoff = time.Second
+		n.noteSync(url, nil)
 		since = nm.Version
 		select {
 		case <-stunServers:
@@ -567,9 +574,13 @@ func (n *Node) roomFromConfig(url, keyStr string, rs api.RoomState, nm *api.NetM
 			allowed = append(allowed, r)
 			rc.Routes = append(rc.Routes, r)
 		}
+		if rc.PeerNodes == nil {
+			rc.PeerNodes = map[identity.Key]string{}
+		}
+		rc.PeerNodes[m.WGKey] = m.NodeID
 		if m.NodeID == exitID {
 			allowed = append(allowed, netip.PrefixFrom(netip.IPv4Unspecified(), 0))
-			rc.Exit = true
+			rc.Exit, rc.ExitPeer = true, m.NodeID
 			if m.ExitDNS {
 				rc.ExitDNS = m.IP
 			}
