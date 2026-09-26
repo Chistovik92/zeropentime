@@ -22,6 +22,7 @@ import (
 	"github.com/amnezia-vpn/amneziawg-go/tun/netstack"
 
 	"github.com/Chistovik92/zeropentime/internal/config"
+	"github.com/Chistovik92/zeropentime/internal/dnsfwd"
 	"github.com/Chistovik92/zeropentime/internal/identity"
 	"github.com/Chistovik92/zeropentime/internal/tunwrap"
 )
@@ -42,6 +43,8 @@ type Room struct {
 	exitSrv bool           // this node is an exit for the room
 	exit    bool           // this node's internet traffic goes into the room
 	exitErr string         // last error turning exit on (logged once)
+	exitDNS netip.Addr     // DNS server behind the exit in use
+	dnsSrv  *dnsfwd.Forwarder
 	log     *slog.Logger
 	psk     string
 
@@ -244,7 +247,8 @@ func (r *Room) SetRoutes(routes []netip.Prefix) {
 
 // SetRouter makes this node route the room's traffic into the given
 // networks (subnet router) and, with exit, into the internet (exit node);
-// nil and false turn it off.
+// nil and false turn it off. An exit also answers DNS queries on its room
+// address for the members that go through it.
 func (r *Room) SetRouter(routes []netip.Prefix, exit bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -262,32 +266,81 @@ func (r *Room) SetRouter(routes []netip.Prefix, exit bool) {
 		r.log.Info("routing for the room on", "routes", routes, "exit", exit)
 	}
 	r.routing, r.exitSrv = slices.Clone(routes), exit
+	r.setDNSServerLocked(exit)
+}
+
+func (r *Room) setDNSServerLocked(on bool) {
+	if !on {
+		if r.dnsSrv != nil {
+			r.dnsSrv.Close()
+			r.dnsSrv = nil
+		}
+		return
+	}
+	if r.dnsSrv != nil {
+		return
+	}
+	f, err := dnsfwd.Listen(netip.AddrPortFrom(r.Address.Addr(), 53),
+		func() []netip.AddrPort { return dnsfwd.SystemUpstreams("/etc/resolv.conf") }, r.log)
+	if err != nil {
+		r.log.Warn("cannot answer DNS for the room's exit users: their DNS will fail", "err", err)
+		return
+	}
+	r.dnsSrv = f
+	r.log.Info("answering DNS for the room's exit users", "addr", f.Addr())
 }
 
 // SetExit sends this machine's internet traffic into the room, to the
-// peer that has 0.0.0.0/0 in its AllowedIPs (the exit node). The node's
-// own sockets are marked (package netmark) and keep the usual routes.
-func (r *Room) SetExit(on bool) {
+// peer that has 0.0.0.0/0 in its AllowedIPs (the exit node), and with a
+// valid dns all DNS queries to that address (the exit's forwarder). The
+// node's own sockets keep the usual routes (package netmark).
+func (r *Room) SetExit(on bool, dns netip.Addr) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if on == r.exit {
+	if !on {
+		dns = netip.Addr{}
+	}
+	if on == r.exit && dns == r.exitDNS {
 		return
 	}
-	if r.tdev != nil {
-		if !on {
-			disableExit(r.ifname)
-			r.log.Info("internet traffic no longer goes through the room")
-		} else if err := enableExit(r.ifname); err != nil {
+	if r.tdev == nil {
+		r.exit, r.exitDNS = on, dns
+		return
+	}
+	if !on {
+		setExitDNS(r.tdev, r.ifname, netip.Addr{})
+		disableExit(r.tdev, r.ifname)
+		r.exit, r.exitDNS, r.exitErr = false, netip.Addr{}, ""
+		r.log.Info("internet traffic no longer goes through the room")
+		return
+	}
+	if !r.exit {
+		if err := enableExit(r.tdev, r.ifname); err != nil {
 			if err.Error() != r.exitErr {
 				r.log.Warn("cannot send internet traffic through the room", "err", err)
 			}
 			r.exitErr = err.Error()
 			return
-		} else {
-			r.log.Info("internet traffic goes through the room's exit node")
 		}
+		r.exit, r.exitErr = true, ""
+		r.log.Info("internet traffic goes through the room's exit node")
 	}
-	r.exit, r.exitErr = on, ""
+	if err := setExitDNS(r.tdev, r.ifname, dns); err != nil {
+		r.log.Warn("DNS through the exit", "err", err)
+	} else if dns.IsValid() {
+		r.log.Info("DNS queries go through the exit node", "dns", dns)
+	} else {
+		r.log.Warn("the exit node does not answer DNS (older version): DNS queries go directly")
+	}
+	r.exitDNS = dns
+}
+
+// Exit reports whether internet traffic is meant to go through this room
+// and the exit's DNS server (invalid if it has none).
+func (r *Room) Exit() (bool, netip.Addr) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.exit, r.exitDNS
 }
 
 // Close tears the room down.
@@ -297,8 +350,10 @@ func (r *Room) Close() {
 	if (len(r.routing) > 0 || r.exitSrv) && r.tdev != nil {
 		disableRouter(r.ifname)
 	}
+	r.setDNSServerLocked(false)
 	if r.exit && r.tdev != nil {
-		disableExit(r.ifname)
+		setExitDNS(r.tdev, r.ifname, netip.Addr{})
+		disableExit(r.tdev, r.ifname)
 	}
 	r.mu.Unlock()
 	r.dev.Close()

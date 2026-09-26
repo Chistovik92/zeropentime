@@ -31,6 +31,7 @@ cleanup() {
   for ns in zhostA zhostB znatA znatB zwan zlanB; do
     ip netns del "$ns" 2>/dev/null || true
   done
+  rm -rf /etc/netns/zhostB
 }
 
 # nat_router NS WAN_IP LAN_NET HOST_NS HOST_IP MODE
@@ -338,6 +339,22 @@ class H(http.server.BaseHTTPRequestHandler):
         pass
 http.server.HTTPServer((sys.argv[1], 8081), H).serve_forever()
 PY
+  # "The provider's DNS": answers every A query with 203.0.113.7 and logs
+  # who asked. B uses it (ip netns exec takes /etc/netns/NS/resolv.conf).
+  ip netns exec zwan python3 - "$CTRL_IP" "$WORK/dns.log" >/dev/null 2>&1 <<'PY' &
+import socket, struct, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.bind((sys.argv[1], 53))
+log = open(sys.argv[2], "a")
+while True:
+    q, src = s.recvfrom(512)
+    print(src[0], file=log, flush=True)
+    r = q[:2] + struct.pack(">HHHHH", 0x8180, 1, 1, 0, 0) + q[12:]
+    r += struct.pack(">HHHIH", 0xC00C, 1, 1, 60, 4) + socket.inet_aton("203.0.113.7")
+    s.sendto(r, src)
+PY
+  mkdir -p /etc/netns/zhostB
+  echo "nameserver $CTRL_IP" >/etc/netns/zhostB/resolv.conf
   local room inv
   room=$("$BIN/zpt-controller" room create -db "$WORK/c.db" -owner admin -name lab -policy auto | awk '/room id/{print $3}')
   inv=$("$BIN/zpt-controller" invite create -db "$WORK/c.db" -room "$room" -url "$CTRL_URL" -uses 2 -auto)
@@ -364,6 +381,30 @@ PY
     dump; return
   fi
   ip netns exec zhostA ping -c2 -W2 "$ipB" >/dev/null || { log "ОШИБКА: комната не работает при включённом exit"; FAILED=1; }
+  # DNS through the exit: B's forwarder on its room address asks B's own
+  # resolver ("the provider's DNS" in zwan), which sees B's address.
+  local answer asked
+  answer=$(ip netns exec zhostA python3 - "$ipB" <<'PY'
+import socket, struct, sys
+q = struct.pack(">HHHHHH", 0x7a70, 0x0100, 1, 0, 0, 0) + bytes([3]) + b"who" + bytes([3]) + b"lab" + bytes([0]) + struct.pack(">HH", 1, 1)
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(3)
+try:
+    s.sendto(q, (sys.argv[1], 53))
+    r = s.recv(512)
+    print(socket.inet_ntoa(r[-4:]))
+except OSError as e:
+    print("none")
+PY
+)
+  asked=$(tail -1 "$WORK/dns.log" 2>/dev/null || true)
+  log "DNS через exit: ответ $answer (ожидался 203.0.113.7), провайдерский DNS видит запрос от $asked (ожидался 198.51.100.3)"
+  { [ "$answer" = 203.0.113.7 ] && [ "$asked" = 198.51.100.3 ]; } || { log "ОШИБКА: DNS через exit не работает"; FAILED=1; }
+  if ip -n zhostA -6 rule | grep -q 31344; then
+    log "IPv6-интернет на время exit закрыт — верно"
+  else
+    log "ОШИБКА: нет правил, закрывающих IPv6 на время exit"; FAILED=1
+  fi
   if ip netns exec zhostA ping -c1 -W1 10.0.2.1 >/dev/null 2>&1; then
     log "ОШИБКА: через exit доступна локальная сеть B"; FAILED=1
   else
@@ -380,7 +421,7 @@ PY
   for _ in $(seq 1 20); do after=$(seen_ip); [ "$after" = 198.51.100.2 ] && break; sleep 1; done
   log "после zpt exit off сервер видит A как $after (ожидался 198.51.100.2)"
   [ "$after" = 198.51.100.2 ] || { log "ОШИБКА: zpt exit off не вернул прямой путь"; FAILED=1; dump; return; }
-  if ip -n zhostA rule | grep -q 31344; then
+  if ip -n zhostA rule | grep -q 31344 || ip -n zhostA -6 rule | grep -q 31344; then
     log "ОШИБКА: правила маршрутизации exit не сняты"; FAILED=1
   fi
 }

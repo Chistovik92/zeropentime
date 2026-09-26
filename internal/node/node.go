@@ -233,7 +233,7 @@ func (n *Node) startLocked(key, controller string, rc config.Room) error {
 	}
 	r.SetRoutes(rc.Routes)
 	r.SetRouter(rc.Routing, rc.ExitNode)
-	r.SetExit(rc.Exit)
+	r.SetExit(rc.Exit, rc.ExitDNS)
 	n.rooms[key] = &running{room: r, tagKey: prof.TagKey, controller: controller, cfg: rc}
 	return nil
 }
@@ -427,6 +427,7 @@ func (n *Node) endpoints(url string) api.Endpoints {
 		Paths:     n.pathStats(),
 		Routes:    n.opts.Config.AdvertiseRoutes,
 		Exit:      n.opts.Config.AdvertiseExit,
+		ExitDNS:   n.opts.Config.AdvertiseExit,
 	}
 }
 
@@ -492,7 +493,7 @@ func (n *Node) apply(url string, nm *api.NetMap) {
 				cur.room.SetBroadcast(rc.Broadcast)
 				cur.room.SetRoutes(rc.Routes)
 				cur.room.SetRouter(rc.Routing, rc.ExitNode)
-				cur.room.SetExit(rc.Exit)
+				cur.room.SetExit(rc.Exit, rc.ExitDNS)
 				cur.cfg = rc
 				continue
 			}
@@ -553,6 +554,9 @@ func (n *Node) roomFromConfig(url, keyStr string, rs api.RoomState, nm *api.NetM
 		if m.NodeID == exitID {
 			allowed = append(allowed, netip.PrefixFrom(netip.IPv4Unspecified(), 0))
 			rc.Exit = true
+			if m.ExitDNS {
+				rc.ExitDNS = m.IP
+			}
 		}
 		rc.Peers = append(rc.Peers, config.Peer{
 			Name:       m.Name,

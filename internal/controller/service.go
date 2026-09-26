@@ -522,7 +522,7 @@ func reach(e api.Endpoints, remote netip.Addr, version string) store.Reach {
 	if knownNAT[e.NAT] {
 		r.NAT = e.NAT
 	}
-	r.Exit = e.Exit
+	r.Exit, r.ExitDNS = e.Exit, e.Exit && e.ExitDNS
 	if e.PortMap.IsValid() {
 		r.PortMap = e.PortMap
 	}
@@ -712,7 +712,7 @@ func (s *Service) netMap(ctx context.Context, nodeID string) (*api.NetMap, error
 						}
 					}
 					exit := o.Exit && o.ExitOffered
-					cfg.Members = append(cfg.Members, pki.Member{NodeID: o.NodeID, Name: o.Name, WGKey: k, IP: o.IP, Tags: o.Tags, Routes: routes, Exit: exit})
+					cfg.Members = append(cfg.Members, pki.Member{NodeID: o.NodeID, Name: o.Name, WGKey: k, IP: o.IP, Tags: o.Tags, Routes: routes, Exit: exit, ExitDNS: exit && o.ExitDNS})
 					if exit && o.NodeID == m.UseExit && o.NodeID != nodeID {
 						st.UseExit = o.NodeID
 					}

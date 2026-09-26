@@ -751,6 +751,19 @@ func TestExitNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, 10*time.Second, "exit picked in the panel", exitVia(true))
+	eventually(t, 5*time.Second, "DNS through the exit", func() error {
+		r, err := a.node.Room("game")
+		if err != nil {
+			return err
+		}
+		v, _ := e.svc.Room(ctx, e.admin, room.ID)
+		for _, m := range v.Members {
+			if on, dns := r.Exit(); m.Name == "bob" && (!on || dns != m.IP) {
+				return fmt.Errorf("exit %v, dns %v, want %v", on, dns, m.IP)
+			}
+		}
+		return nil
+	})
 	setChoice(&node.ExitChoice{Off: true})
 	eventually(t, 10*time.Second, "zpt exit off wins over the panel", exitVia(false))
 	setChoice(&node.ExitChoice{Room: "game", Member: "bob"})

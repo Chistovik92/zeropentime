@@ -49,6 +49,9 @@ type Endpoints struct {
 	// Exit offers this node as an exit to the internet for its rooms;
 	// room admins approve it.
 	Exit bool `json:"exit,omitempty"`
+	// ExitDNS: as an exit, the node answers DNS queries on its room
+	// address (since 0.3.2).
+	ExitDNS bool `json:"exit_dns,omitempty"`
 }
 
 // PathStats counts how a node reaches its peers.

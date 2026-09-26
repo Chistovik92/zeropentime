@@ -19,7 +19,8 @@ func enableRouter(string, netip.Prefix, []netip.Prefix, bool) error {
 	return errors.New("subnet router and exit node modes are supported on Linux only for now")
 }
 func disableRouter(string) {}
-func enableExit(string) error {
-	return errors.New("going through an exit node is supported on Linux only for now")
+func enableExit(tun.Device, string) error {
+	return errors.New("going through an exit node is not supported on this OS yet")
 }
-func disableExit(string) {}
+func disableExit(tun.Device, string)                  {}
+func setExitDNS(tun.Device, string, netip.Addr) error { return nil }

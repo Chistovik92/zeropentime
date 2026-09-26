@@ -88,10 +88,12 @@ func disableRouter(ifname string) {
 // Exit client: like wg-quick, the default route lives in its own table,
 // used by every packet without the node's mark; the main table still wins
 // for everything more specific than a default route (the LAN, rooms,
-// approved networks).
+// approved networks). The exit carries IPv4 only, so the IPv6 internet is
+// made unreachable meanwhile: apps fall back to IPv4 instead of leaking.
 const (
 	exitTable    = netmark.Mark // routing table and rule priority
 	exitMainPref = exitTable - 1
+	exitNftTable = "zpt_exit"
 )
 
 var (
@@ -106,7 +108,7 @@ func ipCmd(args ...string) error {
 	return nil
 }
 
-func enableExit(ifname string) error {
+func enableExit(_ tun.Device, ifname string) error {
 	exitMu.Lock()
 	defer exitMu.Unlock()
 	table := strconv.Itoa(exitTable)
@@ -119,7 +121,7 @@ func enableExit(ifname string) error {
 		os.WriteFile("/proc/sys/net/ipv4/conf/all/src_valid_mark", []byte("1"), 0o644)
 		delExitRules()
 		nft := exec.Command("nft", "-f", "-")
-		nft.Stdin = strings.NewReader(fmt.Sprintf(`table ip %[1]s {
+		nft.Stdin = strings.NewReader(fmt.Sprintf(`table inet %[1]s {
   chain premangle {
     type filter hook prerouting priority -150;
     meta mark set ct mark
@@ -143,12 +145,17 @@ func enableExit(ifname string) error {
 			ipCmd("-4", "route", "del", "default", "dev", ifname, "table", table)
 			return err
 		}
+		// Best effort: fails where IPv6 is switched off, and then there
+		// is nothing to leak.
+		ipCmd("-6", "route", "replace", "unreachable", "default", "table", table)
+		ipCmd("-6", "rule", "add", "pref", strconv.Itoa(exitMainPref), "table", "main", "suppress_prefixlength", "0")
+		ipCmd("-6", "rule", "add", "pref", table, "not", "fwmark", strconv.Itoa(netmark.Mark), "table", table)
 	}
 	exitRooms[ifname] = true
 	return nil
 }
 
-func disableExit(ifname string) {
+func disableExit(_ tun.Device, ifname string) {
 	exitMu.Lock()
 	defer exitMu.Unlock()
 	ipCmd("-4", "route", "del", "default", "dev", ifname, "table", strconv.Itoa(exitTable))
@@ -158,13 +165,35 @@ func disableExit(ifname string) {
 	}
 }
 
-const exitNftTable = "zpt_exit"
-
 // delExitRules removes the rules, also ones left by a crashed node.
 func delExitRules() {
-	exec.Command("nft", "delete", "table", "ip", exitNftTable).Run()
-	for _, pref := range []int{exitMainPref, exitTable} {
-		for ipCmd("-4", "rule", "del", "pref", strconv.Itoa(pref)) == nil {
+	exec.Command("nft", "delete", "table", "inet", exitNftTable).Run()
+	exec.Command("nft", "delete", "table", "ip", exitNftTable).Run() // 0.3.1
+	ipCmd("-6", "route", "flush", "table", strconv.Itoa(exitTable))
+	for _, family := range []string{"-4", "-6"} {
+		for _, pref := range []int{exitMainPref, exitTable} {
+			for ipCmd(family, "rule", "del", "pref", strconv.Itoa(pref)) == nil {
+			}
 		}
 	}
+}
+
+// setExitDNS sends all DNS queries of the machine to the exit (dns) through
+// systemd-resolved; an invalid dns reverts the interface's DNS settings.
+func setExitDNS(_ tun.Device, ifname string, dns netip.Addr) error {
+	if !dns.IsValid() {
+		exec.Command("resolvectl", "revert", ifname).Run()
+		return nil
+	}
+	for _, args := range [][]string{
+		{"dns", ifname, dns.String()},
+		{"domain", ifname, "~."},
+		{"default-route", ifname, "yes"},
+	} {
+		if out, err := exec.Command("resolvectl", args...).CombinedOutput(); err != nil {
+			exec.Command("resolvectl", "revert", ifname).Run()
+			return fmt.Errorf("resolvectl %s: %w: %s (DNS queries go directly, not through the exit)", strings.Join(args, " "), err, out)
+		}
+	}
+	return nil
 }

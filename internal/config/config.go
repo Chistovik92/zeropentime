@@ -85,6 +85,8 @@ type Room struct {
 	// the room's members.
 	Exit     bool `yaml:"-"`
 	ExitNode bool `yaml:"-"`
+	// ExitDNS is the exit's DNS server (its room address) when it has one.
+	ExitDNS netip.Addr `yaml:"-"`
 }
 
 // Obfuscation overrides AmneziaWG parameters that may differ between members

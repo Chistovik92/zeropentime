@@ -48,9 +48,10 @@ var bufPool = sync.Pool{New: func() any { b := make([]byte, maxPacket); return &
 
 // Conn is the node-wide UDP socket.
 type Conn struct {
-	pc   *net.UDPConn
-	port uint16
-	log  *slog.Logger
+	pc      *net.UDPConn
+	untrack func()
+	port    uint16
+	log     *slog.Logger
 
 	mu    sync.Mutex
 	rooms atomic.Pointer[[]*roomBind] // copy-on-write list for the read loop
@@ -77,11 +78,13 @@ func Listen(port int, log *slog.Logger) (*Conn, error) {
 		return nil, fmt.Errorf("listen udp :%d: %w", port, err)
 	}
 	pc := p.(*net.UDPConn)
+	untrack := netmark.Track(pc)
 	c := &Conn{
-		pc:   pc,
-		port: uint16(pc.LocalAddr().(*net.UDPAddr).Port),
-		log:  log,
-		done: make(chan struct{}),
+		pc:      pc,
+		untrack: untrack,
+		port:    uint16(pc.LocalAddr().(*net.UDPAddr).Port),
+		log:     log,
+		done:    make(chan struct{}),
 
 		stunPending: map[stun.TxID]stunWait{},
 	}
@@ -131,6 +134,7 @@ func (c *Conn) Close() error {
 	var err error
 	c.closeOnce.Do(func() {
 		close(c.done)
+		c.untrack()
 		err = c.pc.Close()
 		c.wg.Wait()
 		for _, b := range *c.rooms.Load() {

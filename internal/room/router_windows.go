@@ -7,12 +7,7 @@ import (
 	"net/netip"
 )
 
-var (
-	errNoRouter = errors.New("subnet router and exit node modes are supported on Linux only for now")
-	errNoExit   = errors.New("going through an exit node is supported on Linux only for now")
-)
+var errNoRouter = errors.New("subnet router and exit node modes are supported on Linux only for now")
 
 func enableRouter(string, netip.Prefix, []netip.Prefix, bool) error { return errNoRouter }
 func disableRouter(string)                                          {}
-func enableExit(string) error                                       { return errNoExit }
-func disableExit(string)                                            {}

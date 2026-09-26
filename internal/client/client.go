@@ -10,8 +10,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Chistovik92/zeropentime/internal/api"
@@ -20,12 +23,53 @@ import (
 	"github.com/Chistovik92/zeropentime/internal/pki"
 )
 
-// transport keeps the controller connection out of an exit node's tunnel.
+// transport keeps the controller connection out of an exit node's tunnel
+// and remembers the controller's addresses: when DNS goes through an exit
+// that has vanished, the node still reaches the controller and learns
+// that the exit is gone.
 var transport = func() *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.DialContext = netmark.Dialer().DialContext
+	t.DialContext = cachedDial(netmark.Dialer(), net.DefaultResolver.LookupNetIP)
 	return t
 }()
+
+type lookupFunc func(ctx context.Context, network, host string) ([]netip.Addr, error)
+
+func cachedDial(d *net.Dialer, lookup lookupFunc) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	var mu sync.Mutex
+	known := map[string][]netip.Addr{}
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := netip.ParseAddr(host); err == nil {
+			return d.DialContext(ctx, network, addr)
+		}
+		lctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		ips, lerr := lookup(lctx, "ip", host)
+		cancel()
+		mu.Lock()
+		if lerr == nil && len(ips) > 0 {
+			known[host] = ips
+		} else {
+			ips = known[host]
+		}
+		mu.Unlock()
+		if len(ips) == 0 {
+			return nil, lerr
+		}
+		var last error
+		for _, ip := range ips {
+			c, err := d.DialContext(ctx, network, net.JoinHostPort(ip.Unmap().String(), port))
+			if err == nil {
+				return c, nil
+			}
+			last = err
+		}
+		return nil, last
+	}
+}
 
 // Error is a non-2xx answer from the controller.
 type Error struct {

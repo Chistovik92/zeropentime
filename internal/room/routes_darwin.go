@@ -29,5 +29,6 @@ var (
 
 func enableRouter(string, netip.Prefix, []netip.Prefix, bool) error { return errNoRouter }
 func disableRouter(string)                                          {}
-func enableExit(string) error                                       { return errNoExit }
-func disableExit(string)                                            {}
+func enableExit(tun.Device, string) error                           { return errNoExit }
+func disableExit(tun.Device, string)                                {}
+func setExitDNS(tun.Device, string, netip.Addr) error               { return nil }

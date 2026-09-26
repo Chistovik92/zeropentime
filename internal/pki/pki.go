@@ -55,6 +55,8 @@ type Member struct {
 	// Exit: a room admin allows members to send their internet traffic
 	// through this member.
 	Exit bool `json:"exit,omitempty"`
+	// ExitDNS: the exit answers DNS queries on its room address.
+	ExitDNS bool `json:"exit_dns,omitempty"`
 }
 
 // RoomConfig is the signed description of a room.
