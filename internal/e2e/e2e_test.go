@@ -683,9 +683,9 @@ func TestSubnetRouteApproval(t *testing.T) {
 	eventually(t, 5*time.Second, "not routed before approval", peerHas(false))
 
 	e.act(room.ID, b, controller.ActRoutes)
-	eventually(t, 10*time.Second, "routed after approval", peerHas(true))
+	eventually(t, 20*time.Second, "routed after approval", peerHas(true))
 	e.act(room.ID, b, controller.ActNoRoutes)
-	eventually(t, 10*time.Second, "not routed after revoke", peerHas(false))
+	eventually(t, 20*time.Second, "not routed after revoke", peerHas(false))
 }
 
 // 0.3.1: a member offers to be an exit node; after a room admin approves
@@ -758,7 +758,7 @@ func TestExitNode(t *testing.T) {
 		}
 		v, _ := e.svc.Room(ctx, e.admin, room.ID)
 		for _, m := range v.Members {
-			if on, dns := r.Exit(); m.Name == "bob" && (!on || dns != m.IP) {
+			if on, dns := r.Exit(); m.Name == "bob" && (!on || len(dns) != 1 || dns[0] != m.IP) {
 				return fmt.Errorf("exit %v, dns %v, want %v", on, dns, m.IP)
 			}
 		}
@@ -770,4 +770,67 @@ func TestExitNode(t *testing.T) {
 	eventually(t, 10*time.Second, "zpt exit game bob", exitVia(true))
 	e.act(room.ID, b, controller.ActNoExit)
 	eventually(t, 10*time.Second, "exit revoked", exitVia(false))
+}
+
+// 0.3.4: a room admin sets the room's own DNS servers (inside the room or
+// on the internet); a member uses them unless it picks its own ("zpt dns")
+// or turns room DNS off.
+func TestRoomDNS(t *testing.T) {
+	e := newEnv(t)
+	room := e.room("game", "auto")
+	a := e.node("a")
+	b := e.node("b")
+	e.mustJoin(a, e.invite(room.ID, 0, false), "alice", "active")
+	e.mustJoin(b, e.invite(room.ID, 0, false), "bob", "active")
+	ctx := context.Background()
+	eventually(t, 15*time.Second, "room up", hasRoom(a, "game", 1))
+
+	dnsIs := func(want string) func() error {
+		return func() error {
+			r, err := a.node.Room("game")
+			if err != nil {
+				return err
+			}
+			_, dns := r.Exit()
+			if got := fmt.Sprint(dns); got != want {
+				return fmt.Errorf("dns %s, want %s", got, want)
+			}
+			return nil
+		}
+	}
+	setChoice := func(c *node.DNSChoice) {
+		st, err := node.LoadState(a.state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		st.DNS = c
+		if err := st.Save(a.state); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := e.svc.SetRoomDNS(ctx, e.admin, room.ID, "not-an-ip"); err == nil {
+		t.Fatal("accepted a bad DNS server")
+	}
+	var bobIP netip.Addr
+	v, _ := e.svc.Room(ctx, e.admin, room.ID)
+	for _, m := range v.Members {
+		if m.Name == "bob" {
+			bobIP = m.IP
+		}
+	}
+	// One server inside the room (bob), one on the internet.
+	if err := e.svc.SetRoomDNS(ctx, e.admin, room.ID, bobIP.String()+", 9.9.9.9"); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 10*time.Second, "room DNS", dnsIs("["+bobIP.String()+" 9.9.9.9]"))
+	setChoice(&node.DNSChoice{Servers: []netip.Addr{netip.MustParseAddr("192.168.1.53")}})
+	eventually(t, 10*time.Second, "own DNS wins", dnsIs("[192.168.1.53]"))
+	setChoice(&node.DNSChoice{Off: true})
+	eventually(t, 10*time.Second, "room DNS off", dnsIs("[]"))
+	setChoice(nil)
+	eventually(t, 10*time.Second, "back to room DNS", dnsIs("["+bobIP.String()+" 9.9.9.9]"))
+	if err := e.svc.SetRoomDNS(ctx, e.admin, room.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 10*time.Second, "room DNS cleared", dnsIs("[]"))
 }

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -58,6 +59,14 @@ var funcs = template.FuncMap{
 	},
 	"date": func(t time.Time) string { return t.Format("02.01.2006 15:04") },
 	"join": strings.Join,
+	"addrs": func(as []netip.Addr) string {
+		var s []string
+		for _, a := range as {
+			s = append(s, a.String())
+		}
+		return strings.Join(s, ", ")
+	},
+	"samePrefixes": func(a, b []netip.Prefix) bool { return slices.Equal(a, b) },
 	"prefixes": func(ps []netip.Prefix) string {
 		var s []string
 		for _, p := range ps {
@@ -334,6 +343,9 @@ func (h *Server) roomPage(w http.ResponseWriter, r *http.Request, u *store.User,
 func (h *Server) roomSettings(w http.ResponseWriter, r *http.Request, u *store.User, _ string) {
 	id := r.PathValue("id")
 	err := h.svc.UpdateRoom(r.Context(), u, id, r.PostFormValue("name"), r.PostFormValue("policy"), r.PostFormValue("broadcast"))
+	if err == nil {
+		err = h.svc.SetRoomDNS(r.Context(), u, id, r.PostFormValue("dns"))
+	}
 	back(w, r, "/rooms/"+id, err, "Настройки сохранены")
 }
 

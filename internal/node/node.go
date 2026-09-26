@@ -80,6 +80,7 @@ type Node struct {
 	disco    *discoMgr
 	exitNote string // last explanation why the chosen exit is not used
 	ksKey    string // the kill switch rules in force ("" = off)
+	dnsNote  string // last DNS warning (logged once)
 
 	relayMu     sync.Mutex
 	vlessConn   atomic.Pointer[vless.PacketConn]
@@ -231,14 +232,15 @@ func (n *Node) startLocked(key, controller string, rc config.Room) error {
 		n.sock.Unbind(prof.TagKey)
 		return err
 	}
-	r, err := room.Up(room.Options{Config: rc, Key: key32, Bind: bind, Userspace: n.opts.Config.Userspace, Log: n.log})
+	r, err := room.Up(room.Options{Config: rc, Key: key32, Bind: bind, Userspace: n.opts.Config.Userspace, Log: n.log,
+		DNSUpstreams: n.opts.Config.ExitDNSUpstreams})
 	if err != nil {
 		n.sock.Unbind(prof.TagKey)
 		return err
 	}
 	r.SetRoutes(rc.Routes)
 	r.SetRouter(rc.Routing, rc.ExitNode)
-	r.SetExit(rc.Exit, rc.ExitDNS)
+	r.SetExit(rc.Exit)
 	n.rooms[key] = &running{room: r, tagKey: prof.TagKey, controller: controller, cfg: rc}
 	return nil
 }
@@ -292,11 +294,15 @@ func (n *Node) supervise(ctx context.Context) {
 			if st.Exit != nil {
 				pins += fmt.Sprintf("%+v", *st.Exit)
 			}
+			if st.DNS != nil {
+				pins += fmt.Sprintf("%+v", *st.DNS)
+			}
 			if pins != prevPins {
 				prevPins = pins
 				n.reapplyAll()
 				n.mu.Lock()
 				n.updateKillSwitchLocked(st)
+				n.updateDNSLocked(st)
 				n.mu.Unlock()
 			}
 			want := map[string]bool{}
@@ -501,7 +507,7 @@ func (n *Node) apply(url string, nm *api.NetMap) {
 				cur.room.SetBroadcast(rc.Broadcast)
 				cur.room.SetRoutes(rc.Routes)
 				cur.room.SetRouter(rc.Routing, rc.ExitNode)
-				cur.room.SetExit(rc.Exit, rc.ExitDNS)
+				cur.room.SetExit(rc.Exit)
 				cur.cfg = rc
 				continue
 			}
@@ -517,6 +523,7 @@ func (n *Node) apply(url string, nm *api.NetMap) {
 		}
 	}
 	n.updateKillSwitchLocked(st)
+	n.updateDNSLocked(st)
 }
 
 // roomFromConfig verifies a signed room config and turns it into a local
@@ -539,7 +546,7 @@ func (n *Node) roomFromConfig(url, keyStr string, rs api.RoomState, nm *api.NetM
 	n.versions[rs.RoomID] = cfg.Version
 
 	me := n.ID.NodeID()
-	rc := &config.Room{Name: cfg.Name, Secret: cfg.Secret, MTU: config.DefaultMTU, Broadcast: cfg.Broadcast}
+	rc := &config.Room{Name: cfg.Name, Secret: cfg.Secret, MTU: config.DefaultMTU, Broadcast: cfg.Broadcast, RoomDNS: cfg.DNS}
 	exitID := n.exitPeerLocked(exit, rs, cfg)
 	found := false
 	for _, m := range cfg.Members {
@@ -680,6 +687,66 @@ func (n *Node) updateKillSwitchLocked(st *State) {
 		n.log.Info("kill switch off")
 	}
 	n.ksKey = key
+}
+
+// updateDNSLocked decides which DNS servers this machine uses and which
+// room carries them. Servers picked on this device ("zpt dns", then dns in
+// the config) come first. While the internet goes through an exit, that
+// room carries DNS: the device's own servers, else the room's, else the
+// exit's forwarder — so queries do not leak even with "zpt dns off".
+// Otherwise the first room (by name) with its own servers carries them.
+func (n *Node) updateDNSLocked(st *State) {
+	own, off := n.opts.Config.DNS, false
+	if c := st.DNS; c != nil {
+		own, off = c.Servers, c.Off
+	}
+	keys := make([]string, 0, len(n.rooms))
+	for k := range n.rooms {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return n.rooms[keys[i]].cfg.Name < n.rooms[keys[j]].cfg.Name })
+	carrier := ""
+	var servers []netip.Addr
+	for _, k := range keys {
+		if c := n.rooms[k].cfg; c.Exit {
+			carrier = k
+			switch {
+			case len(own) > 0:
+				servers = own
+			case !off && len(c.RoomDNS) > 0:
+				servers = c.RoomDNS
+			case c.ExitDNS.IsValid():
+				servers = []netip.Addr{c.ExitDNS}
+			}
+			if len(servers) == 0 && n.dnsNote != "old-exit" {
+				n.log.Warn("the exit node does not answer DNS (older version): DNS queries go directly")
+				n.dnsNote = "old-exit"
+			}
+		}
+	}
+	if carrier == "" {
+		for _, k := range keys {
+			if c := n.rooms[k].cfg; len(own) > 0 || !off && len(c.RoomDNS) > 0 {
+				carrier, servers = k, own
+				if len(own) == 0 {
+					servers = c.RoomDNS
+				}
+				break
+			}
+		}
+	}
+	if len(own) > 0 && carrier == "" && n.dnsNote != "no-room" {
+		n.log.Warn("own DNS servers need a running room to attach to", "dns", own)
+		n.dnsNote = "no-room"
+	}
+	for k, r := range n.rooms {
+		if k != carrier {
+			r.room.SetDNS(nil)
+		}
+	}
+	if carrier != "" {
+		n.rooms[carrier].room.SetDNS(servers)
+	}
 }
 
 // lanPrefixesLocked are the networks a kill switch with "allow LAN" keeps

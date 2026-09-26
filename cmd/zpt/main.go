@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net/netip"
 	"os"
 	"os/signal"
 	"syscall"
@@ -39,6 +40,9 @@ const usage = `zpt — zeropentime: децентрализованные вир�
                                            -kill-switch: без exit интернета нет, -allow-lan: кроме своей LAN
   zpt exit    [-c КОНФИГ] off|auto          не использовать exit | как назначил админ комнаты
   zpt exit    [-c КОНФИГ]                   показать выбор
+  zpt dns     [-c КОНФИГ] IP [IP...]         свой DNS-сервер для всех имён (в комнате, в сети за узлом или в интернете)
+  zpt dns     [-c КОНФИГ] off|auto          не брать DNS комнат | как в конфиге и комнатах
+  zpt dns     [-c КОНФИГ]                   показать выбор
   zpt up      [-c КОНФИГ]                   запустить узел
   zpt pubkey  -c КОНФИГ                     публичные ключи узла в статических комнатах
   zpt room new                              секрет статической комнаты (без контроллера)
@@ -67,6 +71,8 @@ func main() {
 		err = cmdLeave(args)
 	case "exit":
 		err = cmdExit(args)
+	case "dns":
+		err = cmdDNS(args)
 	case "up":
 		err = cmdUp(args)
 	case "controller":
@@ -318,7 +324,61 @@ func cmdExit(args []string) error {
 	if err := st.Save(statePath); err != nil {
 		return err
 	}
-	fmt.Println("сохранено; запущенный узел применит выбор за пару секунд (участник должен быть одобрен как exit-узел)")
+	if st.Exit != nil && !st.Exit.Off {
+		fmt.Println("сохранено; запущенный узел применит выбор за пару секунд (участник должен быть одобрен как exit-узел)")
+	} else {
+		fmt.Println("сохранено; запущенный узел применит выбор за пару секунд")
+	}
+	return nil
+}
+
+func cmdDNS(args []string) error {
+	fl := flag.NewFlagSet("dns", flag.ExitOnError)
+	cfgPath, explicit := configFlag(fl)
+	fl.Parse(args)
+	cfg, err := nodeConfig(*cfgPath, explicit())
+	if err != nil {
+		return err
+	}
+	statePath := node.StatePath(cfg.KeyPath())
+	st, err := node.LoadState(statePath)
+	if err != nil {
+		return err
+	}
+	switch {
+	case fl.NArg() == 0:
+		switch c := st.DNS; {
+		case c == nil && len(cfg.DNS) > 0:
+			fmt.Println("DNS: свои серверы из конфига:", cfg.DNS)
+		case c == nil:
+			fmt.Println("DNS: серверы комнаты или exit-узла, если заданы; иначе системные")
+		case c.Off:
+			fmt.Println("DNS: серверы комнат не используются (при выходе через exit — его DNS)")
+		default:
+			fmt.Println("DNS: свои серверы:", c.Servers)
+		}
+		return nil
+	case fl.NArg() == 1 && fl.Arg(0) == "off":
+		st.DNS = &node.DNSChoice{Off: true}
+	case fl.NArg() == 1 && fl.Arg(0) == "auto":
+		st.DNS = nil
+	case fl.NArg() <= 3:
+		c := &node.DNSChoice{}
+		for _, s := range fl.Args() {
+			a, err := netip.ParseAddr(s)
+			if err != nil || a.IsUnspecified() || a.IsMulticast() || a.Zone() != "" {
+				return fmt.Errorf("%q — не адрес DNS-сервера", s)
+			}
+			c.Servers = append(c.Servers, a)
+		}
+		st.DNS = c
+	default:
+		return errors.New("использование: zpt dns [IP [IP [IP]] | off | auto]")
+	}
+	if err := st.Save(statePath); err != nil {
+		return err
+	}
+	fmt.Println("сохранено; запущенный узел применит за пару секунд")
 	return nil
 }
 

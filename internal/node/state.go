@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,17 @@ type State struct {
 	// Exit is the exit node chosen on this machine ("zpt exit"); nil
 	// follows the choice of the room admins.
 	Exit *ExitChoice `json:"exit,omitempty"`
+	// DNS is the DNS choice made on this machine ("zpt dns"); nil follows
+	// the node config, then the rooms.
+	DNS *DNSChoice `json:"dns,omitempty"`
+}
+
+// DNSChoice is set with "zpt dns".
+type DNSChoice struct {
+	Servers []netip.Addr `json:"servers,omitempty"`
+	// Off: do not use the rooms' DNS servers (an exit's DNS is still used
+	// while going through it, so queries do not leak).
+	Off bool `json:"off,omitempty"`
 }
 
 // ExitChoice is an exit node picked with "zpt exit".

@@ -340,7 +340,8 @@ class H(http.server.BaseHTTPRequestHandler):
 http.server.HTTPServer((sys.argv[1], 8081), H).serve_forever()
 PY
   # "The provider's DNS": answers every A query with 203.0.113.7 and logs
-  # who asked. B uses it (ip netns exec takes /etc/netns/NS/resolv.conf).
+  # who asked. B's system resolver (resolv.conf) is a dead address: B's
+  # forwarder must use exit_dns_upstreams from its config instead.
   ip netns exec zwan python3 - "$CTRL_IP" "$WORK/dns.log" >/dev/null 2>&1 <<'PY' &
 import socket, struct, sys
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -354,12 +355,13 @@ while True:
     s.sendto(r, src)
 PY
   mkdir -p /etc/netns/zhostB
-  echo "nameserver $CTRL_IP" >/etc/netns/zhostB/resolv.conf
+  echo "nameserver 198.51.100.99" >/etc/netns/zhostB/resolv.conf
   local room inv
   room=$("$BIN/zpt-controller" room create -db "$WORK/c.db" -owner admin -name lab -policy auto | awk '/room id/{print $3}')
   inv=$("$BIN/zpt-controller" invite create -db "$WORK/c.db" -room "$room" -url "$CTRL_URL" -uses 2 -auto)
   start_node zhostA a "$inv"
-  start_node zhostB b "$inv" "advertise_exit: true"
+  start_node zhostB b "$inv" "advertise_exit: true
+exit_dns_upstreams: [$CTRL_IP]"
   local ipB=""
   for _ in $(seq 1 60); do ipB=$(room_ip zhostB); [ -n "$(room_ip zhostA)" ] && [ -n "$ipB" ] && break; sleep 0.5; done
   seen_ip() { ip netns exec zhostA curl -fsS -m 3 "http://$CTRL_IP:8081/" 2>/dev/null || echo none; }

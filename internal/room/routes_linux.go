@@ -178,21 +178,22 @@ func delExitRules() {
 	}
 }
 
-// setExitDNS sends all DNS queries of the machine to the exit (dns) through
-// systemd-resolved; an invalid dns reverts the interface's DNS settings.
-func setExitDNS(_ tun.Device, ifname string, dns netip.Addr) error {
-	if !dns.IsValid() {
+// setDNS sends all DNS queries of the machine to the servers through
+// systemd-resolved (routing domain "~." on the room interface); no servers
+// revert the interface's DNS settings.
+func setDNS(_ tun.Device, ifname string, servers []netip.Addr) error {
+	if len(servers) == 0 {
 		exec.Command("resolvectl", "revert", ifname).Run()
 		return nil
 	}
-	for _, args := range [][]string{
-		{"dns", ifname, dns.String()},
-		{"domain", ifname, "~."},
-		{"default-route", ifname, "yes"},
-	} {
+	dns := []string{"dns", ifname}
+	for _, a := range servers {
+		dns = append(dns, a.String())
+	}
+	for _, args := range [][]string{dns, {"domain", ifname, "~."}, {"default-route", ifname, "yes"}} {
 		if out, err := exec.Command("resolvectl", args...).CombinedOutput(); err != nil {
 			exec.Command("resolvectl", "revert", ifname).Run()
-			return fmt.Errorf("resolvectl %s: %w: %s (DNS queries go directly, not through the exit)", strings.Join(args, " "), err, out)
+			return fmt.Errorf("resolvectl %s: %w: %s (is systemd-resolved running?)", strings.Join(args, " "), err, out)
 		}
 	}
 	return nil

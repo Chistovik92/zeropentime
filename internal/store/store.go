@@ -72,6 +72,8 @@ var migrations = []string{
 	 ALTER TABLE members ADD COLUMN use_exit TEXT NOT NULL DEFAULT '';`,
 	// 8 (0.3.2): the exit node answers DNS queries of its users.
 	`ALTER TABLE nodes ADD COLUMN exit_dns INTEGER NOT NULL DEFAULT 0;`,
+	// 9 (0.3.4): the room's own DNS servers.
+	`ALTER TABLE rooms ADD COLUMN dns TEXT NOT NULL DEFAULT 'null';`,
 }
 
 // SchemaVersion is the version a fully migrated database has.
@@ -389,6 +391,7 @@ type Room struct {
 	OwnerID    int64
 	JoinPolicy string // "manual" or "auto"
 	Broadcast  string // "on", "off" or "mdns"
+	DNS        []netip.Addr
 	Version    int64
 	CreatedAt  time.Time
 }
@@ -399,15 +402,16 @@ func (t *Tx) CreateRoom(r *Room) error {
 	return err
 }
 
-const roomCols = `id, name, subnet, secret, sign_key, owner_id, join_policy, version, created_at, broadcast`
+const roomCols = `id, name, subnet, secret, sign_key, owner_id, join_policy, version, created_at, broadcast, dns`
 
 func scanRoom(row interface{ Scan(...any) error }) (*Room, error) {
 	var r Room
-	var subnet string
+	var subnet, dns string
 	var created int64
-	if err := row.Scan(&r.ID, &r.Name, &subnet, &r.Secret, &r.SignKey, &r.OwnerID, &r.JoinPolicy, &r.Version, &created, &r.Broadcast); err != nil {
+	if err := row.Scan(&r.ID, &r.Name, &subnet, &r.Secret, &r.SignKey, &r.OwnerID, &r.JoinPolicy, &r.Version, &created, &r.Broadcast, &dns); err != nil {
 		return nil, notFound(err)
 	}
+	json.Unmarshal([]byte(dns), &r.DNS)
 	r.Subnet, _ = netip.ParsePrefix(subnet)
 	r.CreatedAt = time.Unix(created, 0)
 	return &r, nil
@@ -456,6 +460,12 @@ func (t *Tx) AllSubnets() ([]netip.Prefix, error) {
 
 func (t *Tx) UpdateRoom(id, name, joinPolicy, broadcast string) error {
 	_, err := t.tx.Exec(`UPDATE rooms SET name = ?, join_policy = ?, broadcast = ? WHERE id = ?`, name, joinPolicy, broadcast, id)
+	return err
+}
+
+// SetRoomDNS sets the room's own DNS servers (nil: none).
+func (t *Tx) SetRoomDNS(id string, dns []netip.Addr) error {
+	_, err := t.tx.Exec(`UPDATE rooms SET dns = ? WHERE id = ?`, jsonString(dns), id)
 	return err
 }
 

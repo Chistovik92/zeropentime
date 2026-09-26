@@ -70,6 +70,9 @@ type RoomConfig struct {
 	Members  []Member     `json:"members"`
 	// Broadcast: "on" (default when empty), "off" or "mdns".
 	Broadcast string `json:"broadcast,omitempty"`
+	// DNS are the room's own DNS servers (a room admin's choice): inside
+	// the room or its approved networks, or anywhere on the internet.
+	DNS []netip.Addr `json:"dns,omitempty"`
 }
 
 // Signed is a payload with an Ed25519 signature over it. The payload is
@@ -119,7 +122,23 @@ func VerifyRoomConfig(pub ed25519.PublicKey, s *Signed) (*RoomConfig, error) {
 		}
 		seen[m.IP] = true
 	}
+	if len(c.DNS) > MaxDNS {
+		return nil, fmt.Errorf("pki: too many DNS servers")
+	}
+	for _, a := range c.DNS {
+		if !ValidDNS(a) {
+			return nil, fmt.Errorf("pki: invalid DNS server %s", a)
+		}
+	}
 	return &c, nil
+}
+
+// MaxDNS is how many DNS servers a room may have.
+const MaxDNS = 3
+
+// ValidDNS reports whether an address may be a DNS server of a room.
+func ValidDNS(a netip.Addr) bool {
+	return a.IsValid() && a.Zone() == "" && !a.IsUnspecified() && !a.IsMulticast() && !a.IsLinkLocalMulticast()
 }
 
 // ValidRoute reports whether a network may be routed through a member:

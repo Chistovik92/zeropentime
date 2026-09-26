@@ -203,6 +203,37 @@ func (s *Service) UpdateRoom(ctx context.Context, u *store.User, roomID, name, p
 	})
 }
 
+// SetRoomDNS sets the room's own DNS servers: members use them for all
+// names (unless they pick their own with "zpt dns"). They may be inside
+// the room (a member, a network behind a subnet router) or on the internet.
+func (s *Service) SetRoomDNS(ctx context.Context, u *store.User, roomID, servers string) error {
+	var dns []netip.Addr
+	for _, f := range strings.FieldsFunc(servers, func(r rune) bool { return r == ',' || r == ' ' || r == ';' }) {
+		a, err := netip.ParseAddr(f)
+		if err != nil || !pki.ValidDNS(a) {
+			return invalid("DNS-сервер: %q — не IP-адрес", f)
+		}
+		if !slices.Contains(dns, a) {
+			dns = append(dns, a)
+		}
+	}
+	if len(dns) > pki.MaxDNS {
+		return invalid("не больше %d DNS-серверов", pki.MaxDNS)
+	}
+	return s.change(ctx, func(tx *store.Tx) error {
+		if _, err := s.roomFor(tx, u, roomID); err != nil {
+			return err
+		}
+		if err := tx.SetRoomDNS(roomID, dns); err != nil {
+			return err
+		}
+		if err := tx.BumpRoom(roomID); err != nil {
+			return err
+		}
+		return tx.Audit(u.Login, "room.dns", roomID, fmt.Sprint(dns))
+	})
+}
+
 func (s *Service) DeleteRoom(ctx context.Context, u *store.User, roomID string) error {
 	return s.change(ctx, func(tx *store.Tx) error {
 		r, err := s.roomFor(tx, u, roomID)
@@ -696,7 +727,7 @@ func (s *Service) netMap(ctx context.Context, nodeID string) (*api.NetMap, error
 				if err != nil {
 					return err
 				}
-				cfg := &pki.RoomConfig{RoomID: r.ID, Name: r.Name, Subnet: r.Subnet, Version: r.Version, IssuedAt: s.now().UTC(), Broadcast: r.Broadcast}
+				cfg := &pki.RoomConfig{RoomID: r.ID, Name: r.Name, Subnet: r.Subnet, Version: r.Version, IssuedAt: s.now().UTC(), Broadcast: r.Broadcast, DNS: r.DNS}
 				copy(cfg.Secret[:], r.Secret)
 				for _, o := range members {
 					if o.Status != store.StatusActive {

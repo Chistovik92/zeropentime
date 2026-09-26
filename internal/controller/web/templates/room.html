@@ -54,7 +54,7 @@
         <td class="actions">
           {{if eq .Status "pending"}}{{template "act" (actArgs $room.ID .NodeID "approve" "Одобрить" $csrf "")}}{{end}}
           {{if eq .Status "banned"}}{{template "act" (actArgs $room.ID .NodeID "unban" "Разблокировать" $csrf "")}}{{else}}{{template "act" (actArgs $room.ID .NodeID "ban" "Заблокировать" $csrf "Заблокировать участника? Он не сможет вернуться по приглашению.")}}{{end}}
-          {{if .Offered}}{{template "act" (actArgs $room.ID .NodeID "routes" "Разрешить сети" $csrf "Разрешить остальным участникам ходить в сети за этим узлом?")}}{{end}}
+          {{if and .Offered (not (samePrefixes .Offered .Routes))}}{{template "act" (actArgs $room.ID .NodeID "routes" "Разрешить сети" $csrf "Разрешить остальным участникам ходить в сети за этим узлом?")}}{{end}}
           {{if .Routes}}{{template "act" (actArgs $room.ID .NodeID "noroutes" "Отозвать сети" $csrf "")}}{{end}}
           {{if and .ExitOffered (not .Exit)}}{{template "act" (actArgs $room.ID .NodeID "exit" "Разрешить exit" $csrf "Разрешить участникам выходить в интернет через этот узел? Их трафик будет виден в сети этого узла под его IP.")}}{{end}}
           {{if .Exit}}{{template "act" (actArgs $room.ID .NodeID "noexit" "Отозвать exit" $csrf "")}}{{end}}
@@ -111,6 +111,9 @@
         <option value="mdns" {{if eq $room.Broadcast "mdns"}}selected{{end}}>только mDNS</option>
         <option value="off" {{if eq $room.Broadcast "off"}}selected{{end}}>выключено</option>
       </select>
+    </label>
+    <label title="Свой DNS-сервер для всех имён у участников: адрес участника комнаты, устройства в разрешённой сети за узлом (например, Pi-hole дома) или сервер в интернете. До трёх через запятую; пусто — DNS не меняется">DNS-серверы комнаты
+      <input name="dns" value="{{addrs $room.DNS}}" placeholder="например, 10.100.1.5, 9.9.9.9" class="mono">
     </label>
     <div><button>Сохранить</button></div>
   </form>

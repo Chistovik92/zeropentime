@@ -31,6 +31,7 @@ const usage = `zpt-controller — контроллер zeropentime (админ-�
   zpt-controller useradd -db ФАЙЛ -login ЛОГИН [-admin]
   zpt-controller room create   -db ФАЙЛ -owner ЛОГИН -name ИМЯ [-subnet 10.100.1.0/24] [-policy manual|auto]
   zpt-controller room list     -db ФАЙЛ
+  zpt-controller room dns      -db ФАЙЛ -room ID -servers "10.100.1.5, 9.9.9.9"  (пусто — убрать)
   zpt-controller invite create -db ФАЙЛ -room ID -url https://... [-uses 1] [-hours 24] [-auto] [-note ТЕКСТ]
   zpt-controller routes approve|revoke -db ФАЙЛ -room ID -member ИМЯ
   zpt-controller exit approve|revoke   -db ФАЙЛ -room ID -member ИМЯ
@@ -179,6 +180,20 @@ func runAdmin(sub string, args []string) error {
 		for _, r := range rooms {
 			fmt.Printf("%s  %-18s  %s\n", r.ID, r.Subnet, r.Name)
 		}
+		return nil
+	case "room dns":
+		room := fl.String("room", "", "ID комнаты")
+		servers := fl.String("servers", "", "DNS-серверы через запятую (пусто — убрать)")
+		fl.Parse(args)
+		svc, closeDB, err := openService(*db, slog.New(slog.DiscardHandler))
+		if err != nil {
+			return err
+		}
+		defer closeDB()
+		if err := svc.SetRoomDNS(ctx, &store.User{IsAdmin: true, Login: "cli"}, *room, *servers); err != nil {
+			return err
+		}
+		fmt.Println("готово")
 		return nil
 	case "invite create":
 		room := fl.String("room", "", "ID комнаты")

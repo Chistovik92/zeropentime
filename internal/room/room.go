@@ -43,7 +43,8 @@ type Room struct {
 	exitSrv bool           // this node is an exit for the room
 	exit    bool           // this node's internet traffic goes into the room
 	exitErr string         // last error turning exit on (logged once)
-	exitDNS netip.Addr     // DNS server behind the exit in use
+	dns     []netip.Addr   // DNS servers this room carries
+	ups     []netip.Addr   // upstreams of the exit's DNS forwarder (nil: resolv.conf)
 	dnsSrv  *dnsfwd.Forwarder
 	log     *slog.Logger
 	psk     string
@@ -70,6 +71,9 @@ type Options struct {
 	Bind      conn.Bind
 	Userspace bool
 	Log       *slog.Logger
+	// DNSUpstreams replace resolv.conf as the resolvers the exit's DNS
+	// forwarder asks (exit_dns_upstreams in the node config).
+	DNSUpstreams []netip.Addr
 }
 
 // Up creates the interface, configures AmneziaWG and brings the room up.
@@ -77,7 +81,7 @@ func Up(o Options) (_ *Room, err error) {
 	c := o.Config
 	log := o.Log.With("room", c.Name)
 	prof := c.Secret.Derive()
-	r := &Room{Name: c.Name, Address: c.Address, log: log, psk: hex.EncodeToString(prof.PresharedKey[:]), self: o.Key.Public(), peers: map[identity.Key]config.Peer{}}
+	r := &Room{Name: c.Name, Address: c.Address, log: log, psk: hex.EncodeToString(prof.PresharedKey[:]), self: o.Key.Public(), peers: map[identity.Key]config.Peer{}, ups: o.DNSUpstreams}
 
 	var tdev tun.Device
 	if o.Userspace {
@@ -269,6 +273,17 @@ func (r *Room) SetRouter(routes []netip.Prefix, exit bool) {
 	r.setDNSServerLocked(exit)
 }
 
+func (r *Room) upstreams() []netip.AddrPort {
+	if len(r.ups) == 0 {
+		return dnsfwd.SystemUpstreams("/etc/resolv.conf")
+	}
+	var out []netip.AddrPort
+	for _, a := range r.ups {
+		out = append(out, netip.AddrPortFrom(a, 53))
+	}
+	return out
+}
+
 func (r *Room) setDNSServerLocked(on bool) {
 	if !on {
 		if r.dnsSrv != nil {
@@ -281,7 +296,7 @@ func (r *Room) setDNSServerLocked(on bool) {
 		return
 	}
 	f, err := dnsfwd.Listen(netip.AddrPortFrom(r.Address.Addr(), 53),
-		func() []netip.AddrPort { return dnsfwd.SystemUpstreams("/etc/resolv.conf") }, r.log)
+		r.upstreams, r.log)
 	if err != nil {
 		r.log.Warn("cannot answer DNS for the room's exit users: their DNS will fail", "err", err)
 		return
@@ -291,56 +306,62 @@ func (r *Room) setDNSServerLocked(on bool) {
 }
 
 // SetExit sends this machine's internet traffic into the room, to the
-// peer that has 0.0.0.0/0 in its AllowedIPs (the exit node), and with a
-// valid dns all DNS queries to that address (the exit's forwarder). The
-// node's own sockets keep the usual routes (package netmark).
-func (r *Room) SetExit(on bool, dns netip.Addr) {
+// peer that has 0.0.0.0/0 in its AllowedIPs (the exit node). The node's
+// own sockets keep the usual routes (package netmark).
+func (r *Room) SetExit(on bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !on {
-		dns = netip.Addr{}
-	}
-	if on == r.exit && dns == r.exitDNS {
+	if on == r.exit {
 		return
 	}
 	if r.tdev == nil {
-		r.exit, r.exitDNS = on, dns
+		r.exit = on
 		return
 	}
 	if !on {
-		setExitDNS(r.tdev, r.ifname, netip.Addr{})
 		disableExit(r.tdev, r.ifname)
-		r.exit, r.exitDNS, r.exitErr = false, netip.Addr{}, ""
+		r.exit, r.exitErr = false, ""
 		r.log.Info("internet traffic no longer goes through the room")
 		return
 	}
-	if !r.exit {
-		if err := enableExit(r.tdev, r.ifname); err != nil {
-			if err.Error() != r.exitErr {
-				r.log.Warn("cannot send internet traffic through the room", "err", err)
-			}
-			r.exitErr = err.Error()
-			return
+	if err := enableExit(r.tdev, r.ifname); err != nil {
+		if err.Error() != r.exitErr {
+			r.log.Warn("cannot send internet traffic through the room", "err", err)
 		}
-		r.exit, r.exitErr = true, ""
-		r.log.Info("internet traffic goes through the room's exit node")
+		r.exitErr = err.Error()
+		return
 	}
-	if err := setExitDNS(r.tdev, r.ifname, dns); err != nil {
-		r.log.Warn("DNS through the exit", "err", err)
-	} else if dns.IsValid() {
-		r.log.Info("DNS queries go through the exit node", "dns", dns)
-	} else {
-		r.log.Warn("the exit node does not answer DNS (older version): DNS queries go directly")
+	r.exit, r.exitErr = true, ""
+	r.log.Info("internet traffic goes through the room's exit node")
+}
+
+// SetDNS sends all DNS queries of this machine to the given servers,
+// attached to this room's interface (nil: the room does not touch DNS).
+// Only one room of a node carries the DNS settings at a time.
+func (r *Room) SetDNS(servers []netip.Addr) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if slices.Equal(servers, r.dns) {
+		return
 	}
-	r.exitDNS = dns
+	if r.tdev != nil {
+		if err := setDNS(r.tdev, r.ifname, servers); err != nil {
+			r.log.Warn("cannot set DNS servers: DNS queries go as before", "servers", servers, "err", err)
+		} else if len(servers) > 0 {
+			r.log.Info("DNS queries go to", "servers", servers)
+		} else {
+			r.log.Info("DNS settings restored")
+		}
+	}
+	r.dns = slices.Clone(servers)
 }
 
 // Exit reports whether internet traffic is meant to go through this room
-// and the exit's DNS server (invalid if it has none).
-func (r *Room) Exit() (bool, netip.Addr) {
+// and the DNS servers this room carries.
+func (r *Room) Exit() (bool, []netip.Addr) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.exit, r.exitDNS
+	return r.exit, slices.Clone(r.dns)
 }
 
 // Close tears the room down.
@@ -351,8 +372,10 @@ func (r *Room) Close() {
 		disableRouter(r.ifname)
 	}
 	r.setDNSServerLocked(false)
+	if len(r.dns) > 0 && r.tdev != nil {
+		setDNS(r.tdev, r.ifname, nil)
+	}
 	if r.exit && r.tdev != nil {
-		setExitDNS(r.tdev, r.ifname, netip.Addr{})
 		disableExit(r.tdev, r.ifname)
 	}
 	r.mu.Unlock()

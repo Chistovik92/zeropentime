@@ -22,5 +22,7 @@ func disableRouter(string) {}
 func enableExit(tun.Device, string) error {
 	return errors.New("going through an exit node is not supported on this OS yet")
 }
-func disableExit(tun.Device, string)                  {}
-func setExitDNS(tun.Device, string, netip.Addr) error { return nil }
+func disableExit(tun.Device, string) {}
+func setDNS(tun.Device, string, []netip.Addr) error {
+	return errors.New("DNS settings are not supported on this OS yet")
+}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os/exec"
+	"strings"
 
 	"github.com/amnezia-vpn/amneziawg-go/tun"
 	"golang.org/x/sys/windows"
@@ -72,28 +73,41 @@ func disableExit(dev tun.Device, _ string) {
 // (".") to the exit's DNS server whatever interface Windows prefers.
 const nrptKey = `SYSTEM\CurrentControlSet\Services\Dnscache\Parameters\DnsPolicyConfig\{7a707a70-e417-4d05-9a3a-5f2d1e0c7a70}`
 
-func setExitDNS(dev tun.Device, _ string, dns netip.Addr) error {
+func setDNS(dev tun.Device, _ string, servers []netip.Addr) error {
 	luid, err := luidOf(dev)
 	if err != nil {
 		return err
 	}
 	defer exec.Command("ipconfig", "/flushdns").Run()
-	if !dns.IsValid() {
+	if len(servers) == 0 {
 		registry.DeleteKey(registry.LOCAL_MACHINE, nrptKey)
-		return luid.FlushDNS(windows.AF_INET)
+		return errors.Join(luid.FlushDNS(windows.AF_INET), luid.FlushDNS(windows.AF_INET6))
 	}
-	if err := luid.SetDNS(windows.AF_INET, []netip.Addr{dns}, nil); err != nil {
-		return fmt.Errorf("set DNS server: %w", err)
+	var v4, v6 []netip.Addr
+	var list []string
+	for _, a := range servers {
+		if a.Is4() {
+			v4 = append(v4, a)
+		} else {
+			v6 = append(v6, a)
+		}
+		list = append(list, a.String())
+	}
+	if err := luid.SetDNS(windows.AF_INET, v4, nil); err != nil {
+		return fmt.Errorf("set DNS servers: %w", err)
+	}
+	if len(v6) > 0 {
+		luid.SetDNS(windows.AF_INET6, v6, nil)
 	}
 	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, nrptKey, registry.SET_VALUE)
 	if err != nil {
-		return fmt.Errorf("NRPT rule: %w (DNS queries may go directly)", err)
+		return fmt.Errorf("NRPT rule: %w (DNS queries may go to other servers too)", err)
 	}
 	defer k.Close()
 	return errors.Join(
 		k.SetDWordValue("Version", 2),
 		k.SetStringsValue("Name", []string{"."}),
-		k.SetStringValue("GenericDNSServers", dns.String()),
+		k.SetStringValue("GenericDNSServers", strings.Join(list, ";")),
 		k.SetDWordValue("ConfigOptions", 8), // generic DNS servers
 		k.SetStringValue("IPSECCARestriction", ""),
 	)

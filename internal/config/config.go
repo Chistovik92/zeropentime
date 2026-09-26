@@ -60,9 +60,16 @@ type Config struct {
 	// KillSwitch blocks the internet while an exit picked by a room admin
 	// is not usable (for "zpt exit" choices it is a flag of that command);
 	// KillSwitchAllowLAN keeps the local network reachable meanwhile.
-	KillSwitch         bool   `yaml:"kill_switch"`
-	KillSwitchAllowLAN bool   `yaml:"kill_switch_allow_lan"`
-	Rooms              []Room `yaml:"rooms"`
+	KillSwitch         bool `yaml:"kill_switch"`
+	KillSwitchAllowLAN bool `yaml:"kill_switch_allow_lan"`
+	// DNS are this device's own DNS servers for all names (inside a room,
+	// in a network behind a node, or on the internet); they win over the
+	// servers of rooms and exits. "zpt dns" overrides them.
+	DNS []netip.Addr `yaml:"dns"`
+	// ExitDNSUpstreams are the resolvers this node, as an exit, asks for
+	// its users instead of those in /etc/resolv.conf.
+	ExitDNSUpstreams []netip.Addr `yaml:"exit_dns_upstreams"`
+	Rooms            []Room       `yaml:"rooms"`
 }
 
 // Room is one virtual LAN this node is a member of.
@@ -92,6 +99,8 @@ type Room struct {
 	ExitNode bool `yaml:"-"`
 	// ExitDNS is the exit's DNS server (its room address) when it has one.
 	ExitDNS netip.Addr `yaml:"-"`
+	// RoomDNS are the room's own DNS servers (set by a room admin).
+	RoomDNS []netip.Addr `yaml:"-"`
 }
 
 // Obfuscation overrides AmneziaWG parameters that may differ between members
@@ -198,6 +207,14 @@ func DefaultKeyPath() string {
 func (c *Config) Validate() error {
 	if p := c.Port(); p < 0 || p > 65535 {
 		return fmt.Errorf("listen_port %d out of range", p)
+	}
+	if len(c.DNS) > 3 {
+		return fmt.Errorf("dns: at most 3 servers")
+	}
+	for _, a := range append(append([]netip.Addr(nil), c.DNS...), c.ExitDNSUpstreams...) {
+		if !a.IsValid() || a.IsUnspecified() || a.IsMulticast() || a.Zone() != "" {
+			return fmt.Errorf("dns / exit_dns_upstreams: %s is not a DNS server address", a)
+		}
 	}
 	for _, p := range c.AdvertiseRoutes {
 		if !p.IsValid() || p != p.Masked() || !p.Addr().Is4() || p.Bits() < 8 {
