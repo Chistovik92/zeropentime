@@ -340,9 +340,12 @@ subnet_router() {
 # it ("zpt exit"), a web server "on the internet" sees A come from B's
 # public address; A's tunnel and controller connection keep working, B's
 # own LAN stays closed, and "zpt exit off" restores the direct route.
+# exit_node MODE: MODE is B's exit_nat — kernel (nftables) or userspace
+# (the built-in NAT used on Windows); B limits each client to 8 Mbit/s.
 exit_node() {
-  CASE=exit-node
-  log "=== exit-узел: A выходит в интернет через B"
+  local mode=$1
+  CASE=exit-node-$mode
+  log "=== exit-узел ($mode): A выходит в интернет через B"
   setup cone cone
   start_controller
   ip netns exec zwan python3 - "$CTRL_IP" >"$WORK/web.log" 2>&1 <<'PY' &
@@ -350,6 +353,8 @@ import http.server, sys
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         b = self.client_address[0].encode()
+        if self.path == "/big":
+            b = bytes(4 << 20)
         self.send_response(200)
         self.send_header("Content-Length", str(len(b)))
         self.end_headers()
@@ -380,6 +385,8 @@ PY
   inv=$("$BIN/zpt-controller" invite create -db "$WORK/c.db" -room "$room" -url "$CTRL_URL" -uses 2 -auto)
   start_node zhostA a "$inv"
   start_node zhostB b "$inv" "advertise_exit: true
+exit_nat: $mode
+exit_rate_limit: 8
 exit_dns_upstreams: [$CTRL_IP]"
   local ipB=""
   for _ in $(seq 1 60); do ipB=$(room_ip zhostB); [ -n "$(room_ip zhostA)" ] && [ -n "$ipB" ] && break; sleep 0.5; done
@@ -402,6 +409,11 @@ exit_dns_upstreams: [$CTRL_IP]"
     dump; return
   fi
   ip netns exec zhostA ping -c2 -W2 "$ipB" >/dev/null || { log "ОШИБКА: комната не работает при включённом exit"; FAILED=1; }
+  # Speed limit: 4 MiB at 8 Mbit/s (1 MB/s) takes about 4 s.
+  local took
+  took=$(ip netns exec zhostA curl -s -o /dev/null -m 30 -w '%{time_total}' "http://$CTRL_IP:8081/big" || echo 0)
+  log "лимит 8 Мбит/с: 4 МиБ через exit за $took с (ожидалось ≥ 3 с)"
+  awk -v t="$took" 'BEGIN { exit !(t >= 3 && t < 25) }' || { log "ОШИБКА: лимит скорости exit не работает"; FAILED=1; }
   # DNS through the exit: B's forwarder on its room address asks B's own
   # resolver ("the provider's DNS" in zwan), which sees B's address.
   local answer asked
@@ -500,7 +512,8 @@ else
   log "узел A за закрытым UDP дошёл до relay через VLESS + REALITY"
 fi
 subnet_router
-exit_node
+exit_node kernel
+exit_node userspace
 if [ "$FAILED" != 0 ]; then
   log "НЕ ПРОЙДЕНО"; exit 1
 fi

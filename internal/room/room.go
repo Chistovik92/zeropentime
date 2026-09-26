@@ -23,6 +23,7 @@ import (
 
 	"github.com/Chistovik92/zeropentime/internal/config"
 	"github.com/Chistovik92/zeropentime/internal/dnsfwd"
+	"github.com/Chistovik92/zeropentime/internal/exitnat"
 	"github.com/Chistovik92/zeropentime/internal/identity"
 	"github.com/Chistovik92/zeropentime/internal/tunwrap"
 )
@@ -34,20 +35,24 @@ type Room struct {
 	// Net is the in-process network stack; set only in userspace mode.
 	Net *netstack.Net
 
-	ifname  string
-	dev     *device.Device
-	bcast   *tunwrap.Device
-	tdev    tun.Device // the OS interface (nil in userspace mode)
-	routes  []netip.Prefix
-	routing []netip.Prefix // networks this node routes for the room
-	exitSrv bool           // this node is an exit for the room
-	exit    bool           // this node's internet traffic goes into the room
-	exitErr string         // last error turning exit on (logged once)
-	dns     []netip.Addr   // DNS servers this room carries
-	ups     []netip.Addr   // upstreams of the exit's DNS forwarder (nil: resolv.conf)
-	dnsSrv  *dnsfwd.Forwarder
-	log     *slog.Logger
-	psk     string
+	ifname            string
+	dev               *device.Device
+	bcast             *tunwrap.Device
+	tdev              tun.Device // the OS interface (nil in userspace mode)
+	routes            []netip.Prefix
+	routing           []netip.Prefix // networks this node routes for the room
+	exitSrv           bool           // this node is an exit for the room
+	exit              bool           // this node's internet traffic goes into the room
+	exitErr           string         // last error turning exit on (logged once)
+	dns               []netip.Addr   // DNS servers this room carries
+	ups               []netip.Addr   // upstreams of the exit's DNS forwarder (nil: resolv.conf)
+	dnsSrv            *dnsfwd.Forwarder
+	nat               *exitnat.NAT // userspace exit
+	mtu               int
+	userExit          bool
+	limit, limitTotal int
+	log               *slog.Logger
+	psk               string
 
 	self identity.Key // this node's public key in the room
 
@@ -74,6 +79,12 @@ type Options struct {
 	// DNSUpstreams replace resolv.conf as the resolvers the exit's DNS
 	// forwarder asks (exit_dns_upstreams in the node config).
 	DNSUpstreams []netip.Addr
+	// UserspaceExit: as an exit node, forward the room's internet traffic
+	// with our own NAT (package exitnat) instead of the OS.
+	UserspaceExit bool
+	// ExitLimit and ExitLimitTotal limit an exit's speed in bytes per
+	// second, per client and in total, in each direction (0: no limit).
+	ExitLimit, ExitLimitTotal int
 }
 
 // Up creates the interface, configures AmneziaWG and brings the room up.
@@ -81,7 +92,8 @@ func Up(o Options) (_ *Room, err error) {
 	c := o.Config
 	log := o.Log.With("room", c.Name)
 	prof := c.Secret.Derive()
-	r := &Room{Name: c.Name, Address: c.Address, log: log, psk: hex.EncodeToString(prof.PresharedKey[:]), self: o.Key.Public(), peers: map[identity.Key]config.Peer{}, ups: o.DNSUpstreams}
+	r := &Room{Name: c.Name, Address: c.Address, log: log, psk: hex.EncodeToString(prof.PresharedKey[:]), self: o.Key.Public(), peers: map[identity.Key]config.Peer{}, ups: o.DNSUpstreams,
+		mtu: c.MTU, userExit: o.UserspaceExit, limit: o.ExitLimit, limitTotal: o.ExitLimitTotal}
 
 	var tdev tun.Device
 	if o.Userspace {
@@ -111,6 +123,9 @@ func Up(o Options) (_ *Room, err error) {
 	}
 
 	r.bcast = tunwrap.New(tdev, c.Address, c.Broadcast)
+	if o.UserspaceExit {
+		r.bcast.EnablePump()
+	}
 	r.dev = device.NewDevice(r.bcast, o.Bind, wgLogger(log))
 	defer func() {
 		if err != nil {
@@ -260,22 +275,99 @@ func (r *Room) SetRouter(routes []netip.Prefix, exit bool) {
 		r.routing, r.exitSrv = slices.Clone(routes), exit
 		return
 	}
-	if len(routes) == 0 && !exit {
-		disableRouter(r.ifname)
-		r.log.Info("routing for the room off")
-	} else if err := enableRouter(r.ifname, r.Address, routes, exit); err != nil {
+	kernelExit := exit && !r.userExit
+	if len(routes) == 0 && !kernelExit {
+		if len(r.routing) > 0 || r.exitSrv && !r.userExit {
+			disableRouter(r.ifname)
+		}
+	} else if err := enableRouter(r.ifname, r.Address, routes, kernelExit, r.limit, r.limitTotal); err != nil {
 		r.log.Warn("cannot route for the room", "routes", routes, "exit", exit, "err", err)
 		return
+	}
+	if exit && r.userExit {
+		if err := r.startNATLocked(routes); err != nil {
+			r.log.Warn("cannot be an exit node", "err", err)
+			exit = false
+		}
 	} else {
-		r.log.Info("routing for the room on", "routes", routes, "exit", exit)
+		r.stopNATLocked()
+	}
+	if len(routes) > 0 || exit {
+		mode := "kernel"
+		if r.userExit {
+			mode = "userspace"
+		}
+		r.log.Info("routing for the room on", "routes", routes, "exit", exit, "exit_nat", mode)
+	} else {
+		r.log.Info("routing for the room off")
 	}
 	r.routing, r.exitSrv = slices.Clone(routes), exit
 	r.setDNSServerLocked(exit)
 }
 
+// privateNets are never reachable through an exit node unless they are
+// routes a room admin approved: the exit's own LAN stays closed.
+var privateNets = []netip.Prefix{
+	netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("100.64.0.0/10"), netip.MustParsePrefix("127.0.0.0/8"),
+	netip.MustParsePrefix("169.254.0.0/16"), netip.MustParsePrefix("172.16.0.0/12"), netip.MustParsePrefix("192.168.0.0/16"),
+	netip.MustParsePrefix("224.0.0.0/4"), netip.MustParsePrefix("0.0.0.0/8"), netip.MustParsePrefix("240.0.0.0/4"),
+}
+
+func isPrivate(a netip.Addr) bool {
+	for _, p := range privateNets {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// startNATLocked makes this node a userspace exit: the room's packets to
+// the internet go to our NAT instead of the OS; approved routes (kernel
+// subnet router) and the room itself are left alone.
+func (r *Room) startNATLocked(routes []netip.Prefix) error {
+	if r.nat == nil {
+		nat, err := exitnat.New(r.bcast.Inject, exitnat.Options{
+			MTU: r.mtu, Allow: func(a netip.Addr) bool { return !isPrivate(a) },
+			PerClient: r.limit, Total: r.limitTotal, Log: r.log,
+		})
+		if err != nil {
+			return err
+		}
+		r.nat = nat
+	}
+	nat, subnet, self, keep := r.nat, r.Address.Masked(), r.Address.Addr(), slices.Clone(routes)
+	r.bcast.SetDivert(func(pkt []byte) bool {
+		if len(pkt) < 20 || pkt[0]>>4 != 4 {
+			return false
+		}
+		src := netip.AddrFrom4([4]byte(pkt[12:16]))
+		dst := netip.AddrFrom4([4]byte(pkt[16:20]))
+		if !subnet.Contains(src) || subnet.Contains(dst) || dst == self || dst.IsMulticast() || dst == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
+			return false
+		}
+		for _, p := range keep {
+			if p.Contains(dst) {
+				return false
+			}
+		}
+		nat.Inbound(pkt)
+		return true
+	})
+	return nil
+}
+
+func (r *Room) stopNATLocked() {
+	if r.nat != nil {
+		r.bcast.SetDivert(nil)
+		r.nat.Close()
+		r.nat = nil
+	}
+}
+
 func (r *Room) upstreams() []netip.AddrPort {
 	if len(r.ups) == 0 {
-		return dnsfwd.SystemUpstreams("/etc/resolv.conf")
+		return dnsfwd.SystemResolvers()
 	}
 	var out []netip.AddrPort
 	for _, a := range r.ups {
@@ -375,6 +467,7 @@ func (r *Room) Close() {
 		disableRouter(r.ifname)
 	}
 	r.setDNSServerLocked(false)
+	r.stopNATLocked()
 	if len(r.dns) > 0 && r.tdev != nil {
 		setDNS(r.tdev, r.ifname, nil)
 	}

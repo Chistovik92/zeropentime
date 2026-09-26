@@ -237,7 +237,9 @@ func (n *Node) startLocked(key, controller string, rc config.Room) error {
 		return err
 	}
 	r, err := room.Up(room.Options{Config: rc, Key: key32, Bind: bind, Userspace: n.opts.Config.Userspace, Log: n.log,
-		DNSUpstreams: n.opts.Config.ExitDNSUpstreams})
+		DNSUpstreams:  n.opts.Config.ExitDNSUpstreams,
+		UserspaceExit: n.opts.Config.AdvertiseExit && n.opts.Config.UserspaceExit(),
+		ExitLimit:     config.MbitToBytes(n.opts.Config.ExitRateLimit), ExitLimitTotal: config.MbitToBytes(n.opts.Config.ExitRateLimitTotal)})
 	if err != nil {
 		n.sock.Unbind(prof.TagKey)
 		return err

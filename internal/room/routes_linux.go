@@ -31,14 +31,12 @@ func setRoute(_ tun.Device, name string, p netip.Prefix, add bool) error {
 // nftTable is the per-room nftables table of a subnet router / exit node.
 func nftTable(ifname string) string { return "zpt_" + strings.ReplaceAll(ifname, "-", "_") }
 
-// privateNets are never reachable through an exit node unless they are
-// routes the admin approved: the exit's own LAN stays closed.
-const privateNets = "10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4"
-
 // enableRouter lets members of the room reach the given networks through
 // this node, and with exit the internet: IP forwarding plus masquerade of
 // room traffic.
-func enableRouter(ifname string, room netip.Prefix, routes []netip.Prefix, exit bool) error {
+// limit and total are an exit's speed limits in bytes per second, per
+// client and in total, in each direction (0: none).
+func enableRouter(ifname string, room netip.Prefix, routes []netip.Prefix, exit bool, limit, total int) error {
 	if err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0o644); err != nil {
 		return fmt.Errorf("enable ip forwarding: %w", err)
 	}
@@ -53,15 +51,35 @@ func enableRouter(ifname string, room netip.Prefix, routes []netip.Prefix, exit 
 		nat = append(nat, from+" ip daddr "+set+" masquerade")
 		fwd = append(fwd, from+" ip daddr "+set+" accept")
 	}
+	var sets []string
 	if exit {
 		out := fmt.Sprintf(`oifname != "%s"`, ifname)
-		fwd = append(fwd, from+" ip daddr { "+privateNets+" } drop", from+" "+out+" accept")
+		back := fmt.Sprintf(`oifname "%s" ip daddr %s iifname != "%s"`, ifname, room.Masked(), ifname)
+		var private []string
+		for _, p := range privateNets {
+			private = append(private, p.String())
+		}
+		rate := func(bps int) string {
+			return fmt.Sprintf("limit rate over %d kbytes/second burst %d kbytes", max(bps/1024, 1), max(bps/1024/10, 64))
+		}
+		if limit > 0 {
+			sets = append(sets,
+				"set rl_up { type ipv4_addr; size 65535; flags dynamic,timeout; timeout 1m; }",
+				"set rl_down { type ipv4_addr; size 65535; flags dynamic,timeout; timeout 1m; }")
+			fwd = append(fwd, from+" "+out+" update @rl_up { ip saddr "+rate(limit)+" } drop",
+				back+" update @rl_down { ip daddr "+rate(limit)+" } drop")
+		}
+		if total > 0 {
+			fwd = append(fwd, from+" "+out+" "+rate(total)+" drop", back+" "+rate(total)+" drop")
+		}
+		fwd = append(fwd, from+" ip daddr { "+strings.Join(private, ", ")+" } drop", from+" "+out+" accept")
 		nat = append(nat, from+" "+out+" masquerade")
 	}
 	t := nftTable(ifname)
 	rules := fmt.Sprintf(`table ip %[1]s
 delete table ip %[1]s
 table ip %[1]s {
+  %[5]s
   chain postrouting {
     type nat hook postrouting priority 100;
     %[3]s
@@ -72,7 +90,7 @@ table ip %[1]s {
     oifname "%[2]s" ct state established,related accept
   }
 }
-`, t, ifname, strings.Join(nat, "\n    "), strings.Join(fwd, "\n    "))
+`, t, ifname, strings.Join(nat, "\n    "), strings.Join(fwd, "\n    "), strings.Join(sets, "\n  "))
 	cmd := exec.Command("nft", "-f", "-")
 	cmd.Stdin = strings.NewReader(rules)
 	if out, err := cmd.CombinedOutput(); err != nil {

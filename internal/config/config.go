@@ -69,7 +69,15 @@ type Config struct {
 	// ExitDNSUpstreams are the resolvers this node, as an exit, asks for
 	// its users instead of those in /etc/resolv.conf.
 	ExitDNSUpstreams []netip.Addr `yaml:"exit_dns_upstreams"`
-	Rooms            []Room       `yaml:"rooms"`
+	// ExitNAT is how this node forwards as an exit: "kernel" (Linux
+	// nftables), "userspace" (built-in NAT, any OS) or "auto" (default:
+	// kernel on Linux, userspace elsewhere).
+	ExitNAT string `yaml:"exit_nat"`
+	// ExitRateLimit and ExitRateLimitTotal limit an exit's speed in Mbit/s,
+	// per client and in total, in each direction (0: none).
+	ExitRateLimit      float64 `yaml:"exit_rate_limit"`
+	ExitRateLimitTotal float64 `yaml:"exit_rate_limit_total"`
+	Rooms              []Room  `yaml:"rooms"`
 }
 
 // Room is one virtual LAN this node is a member of.
@@ -205,11 +213,31 @@ func DefaultKeyPath() string {
 	return "/var/lib/zeropentime/node.key"
 }
 
+// UserspaceExit reports whether this node forwards as an exit with the
+// built-in NAT rather than the OS.
+func (c *Config) UserspaceExit() bool {
+	return c.ExitNAT == "userspace" || (c.ExitNAT == "" || c.ExitNAT == "auto") && runtime.GOOS != "linux"
+}
+
+// MbitToBytes converts Mbit/s to bytes per second.
+func MbitToBytes(m float64) int { return int(m * 125000) }
+
 // Validate checks the config and fills defaults. A config without rooms is
 // valid: rooms may come from controllers ("zpt join").
 func (c *Config) Validate() error {
 	if p := c.Port(); p < 0 || p > 65535 {
 		return fmt.Errorf("listen_port %d out of range", p)
+	}
+	switch c.ExitNAT {
+	case "", "auto", "kernel", "userspace":
+	default:
+		return fmt.Errorf("exit_nat %q: auto, kernel or userspace", c.ExitNAT)
+	}
+	if c.ExitNAT == "kernel" && runtime.GOOS != "linux" {
+		return fmt.Errorf("exit_nat: kernel works only on Linux")
+	}
+	if c.ExitRateLimit < 0 || c.ExitRateLimitTotal < 0 {
+		return fmt.Errorf("exit_rate_limit: must not be negative")
 	}
 	if len(c.DNS) > 3 {
 		return fmt.Errorf("dns: at most 3 servers")

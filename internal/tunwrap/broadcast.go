@@ -71,6 +71,12 @@ type Device struct {
 
 	window  time.Time
 	counter int
+
+	// Userspace exit node (divert.go).
+	divert       atomic.Pointer[divertFunc]
+	pumpCh       chan pumped
+	pumping      atomic.Bool
+	injectClosed atomic.Bool
 }
 
 // New wraps dev for a room member with address self (e.g. 10.100.1.5/24).
@@ -193,6 +199,9 @@ func (d *Device) unwrap(pkt []byte) (inner []byte, isWrap bool) {
 
 // Read gives AmneziaWG outgoing packets, turning broadcasts into unicasts.
 func (d *Device) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
+	if d.pumping.Load() {
+		return d.readPumped(bufs, sizes, offset)
+	}
 	d.mu.Lock()
 	if len(d.pending) > 0 {
 		n := d.drainLocked(bufs, sizes, offset, 0)
@@ -244,7 +253,11 @@ func (d *Device) drainLocked(bufs [][]byte, sizes []int, offset, n int) int {
 // Write hands incoming packets to the OS, unwrapping broadcasts.
 func (d *Device) Write(bufs [][]byte, offset int) (int, error) {
 	keep := bufs[:0:0]
+	divert := d.divert.Load()
 	for _, b := range bufs {
+		if divert != nil && (*divert)(b[offset:]) {
+			continue
+		}
 		inner, isWrap := d.unwrap(b[offset:])
 		switch {
 		case !isWrap:

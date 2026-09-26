@@ -27,10 +27,10 @@ var (
 	errNoExit   = errors.New("going through an exit node is supported on Linux only for now")
 )
 
-func enableRouter(string, netip.Prefix, []netip.Prefix, bool) error { return errNoRouter }
-func disableRouter(string)                                          {}
-func enableExit(tun.Device, string) error                           { return errNoExit }
-func disableExit(tun.Device, string)                                {}
+func enableRouter(string, netip.Prefix, []netip.Prefix, bool, int, int) error { return errNoRouter }
+func disableRouter(string)                                                    {}
+func enableExit(tun.Device, string) error                                     { return errNoExit }
+func disableExit(tun.Device, string)                                          {}
 func setDNS(tun.Device, string, []netip.Addr) error {
 	return errors.New("DNS settings are not supported on macOS yet")
 }

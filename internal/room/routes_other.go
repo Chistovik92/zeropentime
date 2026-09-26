@@ -15,7 +15,7 @@ func setRoute(tun.Device, string, netip.Prefix, bool) error {
 	return errors.New("routes are not supported on this OS yet")
 }
 
-func enableRouter(string, netip.Prefix, []netip.Prefix, bool) error {
+func enableRouter(string, netip.Prefix, []netip.Prefix, bool, int, int) error {
 	return errors.New("subnet router and exit node modes are supported on Linux only for now")
 }
 func disableRouter(string) {}
