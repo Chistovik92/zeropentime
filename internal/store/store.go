@@ -114,6 +114,9 @@ var migrations = []string{
 	// 12 (0.6.3): two-factor login with a time-based one-time code (TOTP).
 	`ALTER TABLE users ADD COLUMN totp_secret BLOB;
 	 ALTER TABLE users ADD COLUMN totp_step INTEGER NOT NULL DEFAULT 0;`,
+	// 13 (0.6.5): the address an OIDC provider vouches for, set by an admin.
+	`ALTER TABLE users ADD COLUMN oidc_email TEXT NOT NULL DEFAULT '';
+	 CREATE UNIQUE INDEX users_oidc_email ON users(oidc_email) WHERE oidc_email <> '';`,
 }
 
 // SchemaVersion is the version a fully migrated database has.
@@ -244,6 +247,19 @@ const userCols = `id, login, pass_hash, is_admin, created_at, COALESCE(length(to
 
 func (t *Tx) UserByLogin(login string) (*User, error) {
 	return scanUser(t.tx.QueryRow(`SELECT `+userCols+` FROM users WHERE login = ?`, login))
+}
+
+func (t *Tx) UserByOIDCEmail(email string) (*User, error) {
+	if email == "" {
+		return nil, ErrNotFound
+	}
+	return scanUser(t.tx.QueryRow(`SELECT `+userCols+` FROM users WHERE oidc_email = ?`, email))
+}
+
+// SetOIDCEmail binds an address for sign-in through OIDC ("" unbinds).
+func (t *Tx) SetOIDCEmail(id int64, email string) error {
+	_, err := t.tx.Exec(`UPDATE users SET oidc_email = ? WHERE id = ?`, email, id)
+	return err
 }
 
 func (t *Tx) UserByID(id int64) (*User, error) {

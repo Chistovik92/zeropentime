@@ -22,6 +22,11 @@ import (
 
 func newTestServer(t *testing.T) (*httptest.Server, *Service) {
 	t.Helper()
+	return newTestServerCfg(t, Config{})
+}
+
+func newTestServerCfg(t *testing.T, cfg Config) (*httptest.Server, *Service) {
+	t.Helper()
 	st, err := store.Open(filepath.Join(testutil.TempDir(t), "c.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -34,7 +39,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *Service) {
 	if err := svc.CreateUser(context.Background(), nil, "admin", "correct horse battery", true); err != nil {
 		t.Fatal(err)
 	}
-	srv, err := NewServer(Config{}, svc, slog.New(slog.DiscardHandler))
+	srv, err := NewServer(cfg, svc, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}

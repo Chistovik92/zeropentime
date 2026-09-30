@@ -106,14 +106,47 @@ func (s *Service) Login(ctx context.Context, login, pw, code string) (string, er
 			return "", err
 		}
 	}
+	return s.newSession(ctx, u, "user.login")
+}
+
+func (s *Service) newSession(ctx context.Context, u *store.User, action string) (string, error) {
 	token := randomToken()
-	err = s.st.Tx(ctx, func(tx *store.Tx) error {
+	err := s.st.Tx(ctx, func(tx *store.Tx) error {
 		if err := tx.CreateSession(tokenHash(token), u.ID, randomToken(), s.now().Add(SessionTTL)); err != nil {
 			return err
 		}
-		return tx.Audit(u.Login, "user.login", u.Login, "")
+		return tx.Audit(u.Login, action, u.Login, "")
 	})
 	return token, err
+}
+
+// LoginOIDC opens a session for the user bound to an email an OIDC
+// provider has verified. The provider is trusted to have done the second
+// factor.
+func (s *Service) LoginOIDC(ctx context.Context, email string) (string, error) {
+	var u *store.User
+	if err := s.st.Read(ctx, func(tx *store.Tx) (err error) { u, err = tx.UserByOIDCEmail(email); return }); err != nil {
+		return "", ErrBadLogin
+	}
+	return s.newSession(ctx, u, "user.login.oidc")
+}
+
+// BindOIDCEmail sets the address a user signs in with through OIDC (CLI).
+func (s *Service) BindOIDCEmail(ctx context.Context, login, email string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email != "" && (!strings.Contains(email, "@") || len(email) > 254) {
+		return invalid("неверный адрес почты")
+	}
+	return s.st.Tx(ctx, func(tx *store.Tx) error {
+		u, err := tx.UserByLogin(login)
+		if err != nil {
+			return err
+		}
+		if err := tx.SetOIDCEmail(u.ID, email); err != nil {
+			return err
+		}
+		return tx.Audit("cli", "user.oidc", login, email)
+	})
 }
 
 // Session resolves a session token.

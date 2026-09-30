@@ -47,6 +47,7 @@ const usage = `zpt-controller — контроллер zeropentime (админ-�
   exit approve|revoke   -room R -member M                 exit-узел
   exit use     -room R -member M [-via EXIT]              назначить exit (без -via — напрямую)
   user add -login ЛОГИН [-admin] | user list | user delete -login ЛОГИН | user passwd -login ЛОГИН | user totp-off -login ЛОГИН
+  user email -login ЛОГИН -email ПОЧТА                     привязать почту для входа через OIDC (пусто — отвязать)
   acl show -room R | acl set -room R -file ПРАВИЛА|-      правила доступа (пустой файл — убрать)
   acl test -room R -from M -to M|IP [-proto tcp] [-port 22]  проверка «что если»
   audit [-n 50]                                           журнал действий
@@ -115,6 +116,10 @@ func run(sub string, args []string) error {
 		vlessDest := fl.String("vless-dest", "", "настоящий сайт, который имитирует REALITY (host:443), например www.microsoft.com:443")
 		vlessSNI := fl.String("vless-sni", "", "имена (SNI) этого сайта через запятую; по умолчанию — хост из -vless-dest")
 		vlessPublic := fl.String("vless-public", "", "адрес VLESS для узлов (host:port); по умолчанию — хост из -url с портом из -vless")
+		oidcIssuer := fl.String("oidc-issuer", "", "вход через OIDC: адрес провайдера, например https://accounts.google.com (нужен -url)")
+		oidcClient := fl.String("oidc-client-id", "", "OIDC: идентификатор клиента")
+		oidcSecretFile := fl.String("oidc-client-secret-file", "", "OIDC: файл с секретом клиента (или переменная ZPT_OIDC_SECRET)")
+		oidcName := fl.String("oidc-name", "", "OIDC: название на кнопке входа, например Google")
 		maxRooms := fl.Int("max-rooms", 0, "сколько комнат может создать обычный пользователь панели (0 — без ограничения; администраторов не касается)")
 		maxMembers := fl.Int("max-members", 0, "сколько участников может быть в комнате (0 — без ограничения)")
 		level := fl.String("log-level", "info", "debug|info|warn|error")
@@ -130,7 +135,19 @@ func run(sub string, args []string) error {
 		}
 		svc.SetQuotas(*maxRooms, *maxMembers)
 		defer closeDB()
+		oidc := controller.OIDCConfig{Issuer: *oidcIssuer, ClientID: *oidcClient, ClientSecret: os.Getenv("ZPT_OIDC_SECRET"), Name: *oidcName}
+		if *oidcSecretFile != "" {
+			b, err := os.ReadFile(*oidcSecretFile)
+			if err != nil {
+				return err
+			}
+			oidc.ClientSecret = strings.TrimSpace(string(b))
+		}
+		if oidc.Issuer != "" && (oidc.ClientID == "" || *pub == "") {
+			return errors.New("OIDC: укажите -oidc-client-id и -url (адрес возврата строится из него)")
+		}
 		srv, err := controller.NewServer(controller.Config{
+			OIDC:   oidc,
 			Listen: *listen, PublicURL: strings.TrimRight(*pub, "/"), TLSCert: *cert, TLSKey: *key, TrustProxy: *trust,
 			STUNListen: splitList(*stunListen), STUNPublic: splitList(*stunPublic),
 			RelayListen: *relayListen, RelayPublic: *relayPublic,

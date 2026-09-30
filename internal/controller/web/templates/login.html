@@ -9,5 +9,6 @@
     <label>Код 2FA <span class="muted">(если включён)</span> <input name="code" inputmode="numeric" autocomplete="one-time-code"></label>
     <button>Войти</button>
   </form>
+  {{if .Data}}<p class="center"><a class="button" href="/login/oidc">Войти через {{.Data}}</a></p>{{end}}
 </section>
 {{end}}

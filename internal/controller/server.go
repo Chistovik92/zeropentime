@@ -52,6 +52,9 @@ type Config struct {
 	// VLESSPublic is the address nodes dial. Empty: the host of PublicURL
 	// with the VLESSListen port.
 	VLESSPublic string
+	// OIDC turns on "sign in with ..." for panel users an admin has bound
+	// an email to (zpt-controller user email).
+	OIDC OIDCConfig
 }
 
 // Server is the controller HTTP server: node API and admin panel.
@@ -63,6 +66,7 @@ type Server struct {
 	limiter loginLimiter
 	relay   *relay.Server
 	vless   *VLESSSecrets
+	oidc    *oidcClient
 }
 
 // NewServer wires the handlers.
@@ -72,6 +76,9 @@ func NewServer(cfg Config, svc *Service, log *slog.Logger) (*Server, error) {
 		return nil, err
 	}
 	h := &Server{cfg: cfg, svc: svc, log: log, panel: p}
+	if cfg.OIDC.Enabled() {
+		h.oidc = newOIDC(cfg.OIDC)
+	}
 	if cfg.RelayListen != "" {
 		priv, pub, err := svc.RelayKey(context.Background())
 		if err != nil {

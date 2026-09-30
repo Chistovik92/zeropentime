@@ -237,6 +237,7 @@ func runAdmin(sub string, args []string) error {
 	id := fl.Int64("id", 0, "ID приглашения")
 	via := fl.String("via", "", "exit-узел: имя участника (пусто — напрямую)")
 	login := fl.String("login", "", "логин")
+	email := fl.String("email", "", "почта для входа через OIDC (пусто — отвязать)")
 	isAdmin := fl.Bool("admin", false, "администратор инстанса")
 	limit := fl.Int("n", 50, "сколько последних записей")
 	file := fl.String("file", "", "файл с правилами (- — стандартный ввод; пусто — убрать правила)")
@@ -556,6 +557,11 @@ func runAdmin(sub string, args []string) error {
 			return fmt.Errorf("пользователь %q не найден", *login)
 		}
 		return done(svc.DeleteUser(a.ctx, cliAdmin, u.ID))
+	case "user email":
+		if err := svc.BindOIDCEmail(a.ctx, strings.ToLower(*login), *email); err != nil {
+			return err
+		}
+		return done(nil)
 	case "user totp-off":
 		if err := svc.ResetTOTP(a.ctx, strings.ToLower(*login)); err != nil {
 			return err

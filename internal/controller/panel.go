@@ -240,6 +240,8 @@ func (h *Server) routesPanel(mux *http.ServeMux) {
 	mux.Handle("GET /static/", h.panel.static)
 	mux.Handle("GET /login", securityHeaders(http.HandlerFunc(h.loginPage)))
 	mux.Handle("POST /login", securityHeaders(http.HandlerFunc(h.loginSubmit)))
+	mux.Handle("GET /login/oidc", securityHeaders(http.HandlerFunc(h.oidcStart)))
+	mux.Handle("GET /login/oidc/callback", securityHeaders(http.HandlerFunc(h.oidcCallback)))
 	mux.Handle("POST /logout", h.auth(h.logout))
 	mux.Handle("GET /{$}", h.auth(func(w http.ResponseWriter, r *http.Request, _ *store.User, _ string) {
 		http.Redirect(w, r, "/rooms", http.StatusSeeOther)
@@ -271,7 +273,7 @@ func (h *Server) routesPanel(mux *http.ServeMux) {
 // ---- login ----
 
 func (h *Server) loginPage(w http.ResponseWriter, r *http.Request) {
-	h.render(w, r, http.StatusOK, "login", &view{Title: "Вход"})
+	h.render(w, r, http.StatusOK, "login", &view{Title: "Вход", Data: h.oidcName()})
 }
 
 func (h *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
