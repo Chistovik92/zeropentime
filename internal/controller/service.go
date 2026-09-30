@@ -53,6 +53,9 @@ type Service struct {
 	log *slog.Logger
 	now func() time.Time
 
+	// Quotas, 0 = no limit (SetQuotas).
+	maxRooms, maxMembers int
+
 	pathsMu sync.Mutex
 	paths   map[string]api.PathStats // by node ID, as last reported
 }
@@ -64,6 +67,12 @@ func NewService(st *store.Store, log *slog.Logger) (*Service, error) {
 		return nil, err
 	}
 	return &Service{st: st, hub: newHub(v), log: log, now: time.Now, paths: map[string]api.PathStats{}}, nil
+}
+
+// SetQuotas limits how many rooms a non-admin user may own and how many
+// members a room may have. Zero means no limit.
+func (s *Service) SetQuotas(maxRooms, maxMembers int) {
+	s.maxRooms, s.maxMembers = maxRooms, maxMembers
 }
 
 // change runs fn in a transaction, bumps the global version and wakes pollers.
@@ -128,6 +137,13 @@ func (s *Service) CreateRoom(ctx context.Context, u *store.User, name, subnet, p
 	}
 	r := &store.Room{ID: secret.RoomID(), Name: name, Secret: secret[:], SignKey: signKey, OwnerID: u.ID, JoinPolicy: policy}
 	err = s.change(ctx, func(tx *store.Tx) error {
+		if s.maxRooms > 0 && !u.IsAdmin {
+			if own, err := tx.ListRooms(u.ID); err != nil {
+				return err
+			} else if len(own) >= s.maxRooms {
+				return invalid("достигнут лимит комнат на пользователя: %d", s.maxRooms)
+			}
+		}
 		used, err := tx.AllSubnets()
 		if err != nil {
 			return err
@@ -722,6 +738,9 @@ func (s *Service) Join(ctx context.Context, nodeKey ed25519.PublicKey, req *api.
 		members, err := tx.ListMembers(r.ID)
 		if err != nil {
 			return err
+		}
+		if s.maxMembers > 0 && len(members) >= s.maxMembers {
+			return ErrForbidden // the room is full
 		}
 		ip, err := allocateIP(r.Subnet, members)
 		if err != nil {

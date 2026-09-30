@@ -115,6 +115,8 @@ func run(sub string, args []string) error {
 		vlessDest := fl.String("vless-dest", "", "настоящий сайт, который имитирует REALITY (host:443), например www.microsoft.com:443")
 		vlessSNI := fl.String("vless-sni", "", "имена (SNI) этого сайта через запятую; по умолчанию — хост из -vless-dest")
 		vlessPublic := fl.String("vless-public", "", "адрес VLESS для узлов (host:port); по умолчанию — хост из -url с портом из -vless")
+		maxRooms := fl.Int("max-rooms", 0, "сколько комнат может создать обычный пользователь панели (0 — без ограничения; администраторов не касается)")
+		maxMembers := fl.Int("max-members", 0, "сколько участников может быть в комнате (0 — без ограничения)")
 		level := fl.String("log-level", "info", "debug|info|warn|error")
 		fl.Parse(args)
 		var l slog.Level
@@ -126,6 +128,7 @@ func run(sub string, args []string) error {
 		if err != nil {
 			return err
 		}
+		svc.SetQuotas(*maxRooms, *maxMembers)
 		defer closeDB()
 		srv, err := controller.NewServer(controller.Config{
 			Listen: *listen, PublicURL: strings.TrimRight(*pub, "/"), TLSCert: *cert, TLSKey: *key, TrustProxy: *trust,

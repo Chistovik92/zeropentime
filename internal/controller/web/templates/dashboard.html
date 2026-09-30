@@ -1,0 +1,31 @@
+{{/* SPDX-License-Identifier: AGPL-3.0-only */}}
+{{define "content"}}
+<h1>Обзор</h1>
+{{with .Data}}
+<section class="card">
+  <div class="stats">
+    <div><b>{{.Rooms}}</b><span>комнат</span></div>
+    <div><b>{{.Members}}</b><span>участников</span></div>
+    <div><b>{{.Pending}}</b><span>ждут одобрения</span></div>
+    <div><b>{{.Online}} / {{.Nodes}}</b><span>устройств в сети</span></div>
+    <div><b>{{if lt .DirectPercent 0}}—{{else}}{{.DirectPercent}}%{{end}}</b><span>прямых соединений</span></div>
+    <div><b>{{.Exits}}</b><span>выходов в интернет</span></div>
+  </div>
+  {{if .ShowRelay}}
+  <p class="muted">Relay с момента запуска: {{.Sessions}} узлов подключено, {{.Packets}} пакетов, {{.RelayGB}} ГБ.</p>
+  {{end}}
+</section>
+<section class="card">
+  {{if .Rows}}
+  <table>
+    <thead><tr><th>Комната</th><th>Участников</th><th>В сети</th><th>Ждут одобрения</th></tr></thead>
+    <tbody>
+    {{range .Rows}}
+      <tr><td><a href="/rooms/{{.Room.ID}}">{{.Room.Name}}</a></td><td>{{.Members}}</td><td>{{.Online}}</td><td>{{.Pending}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}<p class="muted">Комнат пока нет.</p>{{end}}
+</section>
+{{end}}
+{{end}}

@@ -244,6 +244,7 @@ func (h *Server) routesPanel(mux *http.ServeMux) {
 	mux.Handle("GET /{$}", h.auth(func(w http.ResponseWriter, r *http.Request, _ *store.User, _ string) {
 		http.Redirect(w, r, "/rooms", http.StatusSeeOther)
 	}))
+	mux.Handle("GET /dashboard", h.auth(h.dashboardPage))
 	mux.Handle("GET /rooms", h.auth(h.roomsPage))
 	mux.Handle("POST /rooms", h.auth(h.roomCreate))
 	mux.Handle("GET /rooms/{id}", h.auth(h.roomPage))
@@ -326,6 +327,7 @@ type roomData struct {
 	NewInvite   string
 	NewInviteQR template.URL
 	Paths       map[string]api.PathStats // by node ID
+	Topology    template.HTML
 }
 
 func (h *Server) roomView(w http.ResponseWriter, r *http.Request, u *store.User, csrf string, extra func(*roomData)) {
@@ -338,6 +340,7 @@ func (h *Server) roomView(w http.ResponseWriter, r *http.Request, u *store.User,
 	for _, m := range rv.Members {
 		d.Paths[m.NodeID] = h.svc.Paths(m.NodeID)
 	}
+	d.Topology = Topology(rv.Members, func(m store.Member) bool { return time.Since(m.LastSeen) < OnlineWindow })
 	if extra != nil {
 		extra(d)
 	}
@@ -560,4 +563,28 @@ func (h *Server) auditPage(w http.ResponseWriter, r *http.Request, u *store.User
 		return
 	}
 	h.render(w, r, http.StatusOK, "audit", &view{User: u, CSRF: csrf, Title: "Журнал", Data: entries})
+}
+
+type dashboardData struct {
+	*Dashboard
+	Relay     bool
+	Sessions  int
+	RelayGB   string
+	Packets   uint64
+	ShowRelay bool // instance-wide numbers only for admins
+}
+
+func (h *Server) dashboardPage(w http.ResponseWriter, r *http.Request, u *store.User, csrf string) {
+	d, err := h.svc.Dashboard(r.Context(), u)
+	if err != nil {
+		back(w, r, "/rooms", err, "")
+		return
+	}
+	data := &dashboardData{Dashboard: d}
+	if h.relay != nil && u.IsAdmin {
+		st := h.relay.Stats()
+		data.ShowRelay, data.Sessions, data.Packets = true, st.Sessions, st.Packets
+		data.RelayGB = fmt.Sprintf("%.2f", float64(st.Bytes)/(1<<30))
+	}
+	h.render(w, r, http.StatusOK, "dashboard", &view{User: u, CSRF: csrf, Title: "Обзор", Data: data})
 }

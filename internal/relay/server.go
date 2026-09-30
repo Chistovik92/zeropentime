@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Chistovik92/zeropentime/internal/identity"
@@ -55,10 +56,11 @@ type Server struct {
 	permMu sync.Mutex
 	perm   map[[2]string]permEntry
 
-	outMu   sync.Mutex
-	pc      *net.UDPConn
-	streams map[netip.AddrPort]func([]byte) error
-	nextID  uint64
+	packets, bytes atomic.Uint64 // forwarded since start
+	outMu          sync.Mutex
+	pc             *net.UDPConn
+	streams        map[netip.AddrPort]func([]byte) error
+	nextID         uint64
 }
 
 type permEntry struct {
@@ -143,6 +145,8 @@ func (s *Server) ServeStream(read func([]byte) (int, error), write func([]byte) 
 // send delivers frames to UDP addresses or to streams.
 func (s *Server) send(outs []Out) {
 	for _, o := range outs {
+		s.packets.Add(1)
+		s.bytes.Add(uint64(len(o.Data)))
 		s.outMu.Lock()
 		w, isStream := s.streams[o.To]
 		pc := s.pc
@@ -310,4 +314,19 @@ func (s *Server) expireLoop(ctx context.Context) {
 			s.permMu.Unlock()
 		}
 	}
+}
+
+// Stats are the relay's counters.
+type Stats struct {
+	Sessions int
+	Packets  uint64 // sent since start
+	Bytes    uint64
+}
+
+// Stats returns how many nodes are connected and how much was forwarded.
+func (s *Server) Stats() Stats {
+	s.mu.Lock()
+	n := len(s.byNode)
+	s.mu.Unlock()
+	return Stats{Sessions: n, Packets: s.packets.Load(), Bytes: s.bytes.Load()}
 }

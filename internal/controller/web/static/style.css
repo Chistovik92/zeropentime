@@ -58,3 +58,13 @@ input.acl-to { min-width: 180px; }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--line); }
 .dot.on { background: #2fbf5b; }
 .qr { width: 220px; height: 220px; image-rendering: pixelated; background: #fff; padding: 6px; border-radius: 6px; }
+
+.stats{display:flex;flex-wrap:wrap;gap:1.5rem}
+.stats div{display:flex;flex-direction:column}
+.stats b{font-size:1.8rem}
+.stats span{color:var(--muted,#888);font-size:.85rem}
+svg.topo{max-width:420px;width:100%;height:auto}
+svg.topo circle.on{fill:#2e9e5b}
+svg.topo circle.off{fill:#999}
+svg.topo line.exit{stroke:#c08a2a;stroke-width:1.5;stroke-dasharray:4 3}
+svg.topo text{font-size:11px;fill:currentColor}

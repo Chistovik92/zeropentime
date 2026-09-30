@@ -13,6 +13,7 @@
 <header class="top">
   <a class="brand" href="/rooms">zeropentime</a>
   <nav>
+    <a href="/dashboard">Обзор</a>
     <a href="/rooms">Комнаты</a>
     {{if .User.IsAdmin}}<a href="/users">Пользователи</a><a href="/audit">Журнал</a>{{end}}
     <a href="/account">{{.User.Login}}</a>
