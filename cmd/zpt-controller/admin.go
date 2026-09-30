@@ -556,6 +556,12 @@ func runAdmin(sub string, args []string) error {
 			return fmt.Errorf("пользователь %q не найден", *login)
 		}
 		return done(svc.DeleteUser(a.ctx, cliAdmin, u.ID))
+	case "user totp-off":
+		if err := svc.ResetTOTP(a.ctx, strings.ToLower(*login)); err != nil {
+			return err
+		}
+		fmt.Printf("двухфакторный вход для %s выключен\n", *login)
+		return nil
 	case "user passwd":
 		pw := controller.RandomPassword()
 		if err := svc.SetPassword(a.ctx, strings.ToLower(*login), pw); err != nil {

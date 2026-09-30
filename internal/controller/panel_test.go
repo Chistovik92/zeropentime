@@ -178,7 +178,7 @@ func TestNonOwnerCannotManageRoom(t *testing.T) {
 		t.Fatal(err)
 	}
 	session := func(login, pw string) *store.User {
-		tok, err := svc.Login(ctx, login, pw)
+		tok, err := svc.Login(ctx, login, pw, "")
 		if err != nil {
 			t.Fatal(err)
 		}

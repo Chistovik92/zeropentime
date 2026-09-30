@@ -11,4 +11,25 @@
     <button>Сменить</button>
   </form>
 </section>
+<section class="card narrow">
+  <h2>Двухфакторный вход</h2>
+  {{if .User.TOTP}}
+  <p>Включён: при входе нужен код из приложения-аутентификатора.</p>
+  <form method="post" action="/account/totp/off" class="stack">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>Пароль для подтверждения <input name="password" type="password" autocomplete="current-password" required></label>
+    <button>Выключить</button>
+  </form>
+  {{else}}
+  <p class="muted">Отсканируйте код в приложении-аутентификаторе (Google Authenticator, Aegis, 2FAS…) или введите ключ вручную, затем введите текущий код.</p>
+  {{if .Data.QR}}<img class="qr" src="{{.Data.QR}}" alt="QR-код для приложения-аутентификатора">{{end}}
+  <p><code>{{.Data.Secret}}</code></p>
+  <form method="post" action="/account/totp" class="stack">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="secret" value="{{.Data.Secret}}">
+    <label>Код из приложения <input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" required></label>
+    <button>Включить</button>
+  </form>
+  {{end}}
+</section>
 {{end}}

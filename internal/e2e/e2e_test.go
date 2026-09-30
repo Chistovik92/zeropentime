@@ -138,7 +138,7 @@ func newEnv(t *testing.T) *env {
 	if err := svc.CreateUser(ctx, nil, "admin", "correct horse battery", true); err != nil {
 		t.Fatal(err)
 	}
-	tok, err := svc.Login(ctx, "admin", "correct horse battery")
+	tok, err := svc.Login(ctx, "admin", "correct horse battery", "")
 	if err != nil {
 		t.Fatal(err)
 	}

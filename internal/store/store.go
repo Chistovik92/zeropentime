@@ -111,6 +111,9 @@ var migrations = []string{
 	`ALTER TABLE rooms ADD COLUMN acl TEXT NOT NULL DEFAULT '';`,
 	// 11 (0.5.1): members look each other up in the public DHT.
 	`ALTER TABLE rooms ADD COLUMN dht INTEGER NOT NULL DEFAULT 0;`,
+	// 12 (0.6.3): two-factor login with a time-based one-time code (TOTP).
+	`ALTER TABLE users ADD COLUMN totp_secret BLOB;
+	 ALTER TABLE users ADD COLUMN totp_step INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // SchemaVersion is the version a fully migrated database has.
@@ -216,6 +219,7 @@ type User struct {
 	PassHash string
 	IsAdmin  bool
 	Created  time.Time
+	TOTP     bool // two-factor login is on
 }
 
 func (t *Tx) CreateUser(login, passHash string, admin bool) (int64, error) {
@@ -229,14 +233,14 @@ func (t *Tx) CreateUser(login, passHash string, admin bool) (int64, error) {
 func scanUser(row interface{ Scan(...any) error }) (*User, error) {
 	var u User
 	var created int64
-	if err := row.Scan(&u.ID, &u.Login, &u.PassHash, &u.IsAdmin, &created); err != nil {
+	if err := row.Scan(&u.ID, &u.Login, &u.PassHash, &u.IsAdmin, &created, &u.TOTP); err != nil {
 		return nil, notFound(err)
 	}
 	u.Created = time.Unix(created, 0)
 	return &u, nil
 }
 
-const userCols = `id, login, pass_hash, is_admin, created_at`
+const userCols = `id, login, pass_hash, is_admin, created_at, COALESCE(length(totp_secret), 0) > 0`
 
 func (t *Tx) UserByLogin(login string) (*User, error) {
 	return scanUser(t.tx.QueryRow(`SELECT `+userCols+` FROM users WHERE login = ?`, login))
@@ -272,6 +276,41 @@ func (t *Tx) CountUsers() (int, error) {
 func (t *Tx) SetPassword(id int64, passHash string) error {
 	_, err := t.tx.Exec(`UPDATE users SET pass_hash = ? WHERE id = ?`, passHash, id)
 	return err
+}
+
+// TOTP returns the user's TOTP secret (nil when 2FA is off) and the last
+// accepted time step.
+func (t *Tx) TOTP(id int64) (secret []byte, step int64, err error) {
+	var raw []byte
+	if err = t.tx.QueryRow(`SELECT totp_secret, totp_step FROM users WHERE id = ?`, id).Scan(&raw, &step); err != nil {
+		return nil, 0, notFound(err)
+	}
+	if len(raw) == 0 {
+		return nil, 0, nil
+	}
+	secret, err = t.open(raw)
+	return secret, step, err
+}
+
+// SetTOTP turns 2FA on with the secret, or off with a nil secret.
+func (t *Tx) SetTOTP(id int64, secret []byte) error {
+	v, err := t.seal(secret)
+	if err != nil {
+		return err
+	}
+	_, err = t.tx.Exec(`UPDATE users SET totp_secret = ?, totp_step = 0 WHERE id = ?`, v, id)
+	return err
+}
+
+// UseTOTPStep records an accepted step; it reports false when that step
+// (or a later one) was already used, so a code works once.
+func (t *Tx) UseTOTPStep(id, step int64) (bool, error) {
+	res, err := t.tx.Exec(`UPDATE users SET totp_step = ? WHERE id = ? AND totp_step < ?`, step, id, step)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
 }
 
 func (t *Tx) DeleteUser(id int64) error {

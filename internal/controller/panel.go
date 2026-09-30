@@ -261,6 +261,8 @@ func (h *Server) routesPanel(mux *http.ServeMux) {
 	mux.Handle("POST /users/{uid}/delete", h.auth(h.userDelete))
 	mux.Handle("GET /account", h.auth(h.accountPage))
 	mux.Handle("POST /account/password", h.auth(h.accountPassword))
+	mux.Handle("POST /account/totp", h.auth(h.accountTOTPOn))
+	mux.Handle("POST /account/totp/off", h.auth(h.accountTOTPOff))
 	mux.Handle("GET /audit", h.auth(h.auditPage))
 	mux.Handle("GET /backup", h.auth(h.backupDownload))
 }
@@ -278,10 +280,10 @@ func (h *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		h.render(w, r, http.StatusTooManyRequests, "login", &view{Title: "Вход", Err: "Слишком много неудачных попыток. Подождите 10 минут."})
 		return
 	}
-	token, err := h.svc.Login(r.Context(), strings.ToLower(strings.TrimSpace(r.PostFormValue("login"))), r.PostFormValue("password"))
+	token, err := h.svc.Login(r.Context(), strings.ToLower(strings.TrimSpace(r.PostFormValue("login"))), r.PostFormValue("password"), r.PostFormValue("code"))
 	if err != nil {
 		h.limiter.failed(addr, time.Now())
-		h.render(w, r, http.StatusUnauthorized, "login", &view{Title: "Вход", Err: "Неверный логин или пароль"})
+		h.render(w, r, http.StatusUnauthorized, "login", &view{Title: "Вход", Err: "Неверный логин, пароль или код"})
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -477,7 +479,43 @@ func (h *Server) userDelete(w http.ResponseWriter, r *http.Request, u *store.Use
 }
 
 func (h *Server) accountPage(w http.ResponseWriter, r *http.Request, u *store.User, csrf string) {
-	h.render(w, r, http.StatusOK, "account", &view{User: u, CSRF: csrf, Title: "Мой аккаунт"})
+	h.accountView(w, r, u, csrf, "")
+}
+
+type accountData struct {
+	Secret string       // new TOTP secret, base32; empty when 2FA is on
+	QR     template.URL // its otpauth:// link as an image
+}
+
+func (h *Server) accountView(w http.ResponseWriter, r *http.Request, u *store.User, csrf, errMsg string) {
+	d := &accountData{}
+	if !u.TOTP {
+		secret := NewTOTPSecret()
+		d.Secret = TOTPSecretText(secret)
+		if png, err := qrcode.Encode(TOTPURI("zeropentime", u.Login, secret), qrcode.Medium, 240); err == nil {
+			d.QR = template.URL("data:image/png;base64," + base64.StdEncoding.EncodeToString(png))
+		}
+	}
+	status := http.StatusOK
+	if errMsg != "" {
+		status = http.StatusUnprocessableEntity
+	}
+	h.render(w, r, status, "account", &view{User: u, CSRF: csrf, Title: "Мой аккаунт", Err: errMsg, Data: d})
+}
+
+func (h *Server) accountTOTPOn(w http.ResponseWriter, r *http.Request, u *store.User, _ string) {
+	secret, err := b32.DecodeString(strings.ToUpper(strings.TrimSpace(r.PostFormValue("secret"))))
+	if err != nil || len(secret) != 20 {
+		back(w, r, "/account", invalid("неверный секрет, обновите страницу"), "")
+		return
+	}
+	err = h.svc.EnableTOTP(r.Context(), u, secret, r.PostFormValue("code"))
+	back(w, r, "/account", err, "Двухфакторный вход включён")
+}
+
+func (h *Server) accountTOTPOff(w http.ResponseWriter, r *http.Request, u *store.User, _ string) {
+	err := h.svc.DisableTOTP(r.Context(), u, r.PostFormValue("password"))
+	back(w, r, "/account", err, "Двухфакторный вход выключен")
 }
 
 func (h *Server) accountPassword(w http.ResponseWriter, r *http.Request, u *store.User, _ string) {

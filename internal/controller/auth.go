@@ -88,8 +88,9 @@ func tokenHash(t string) []byte { h := sha256.Sum256([]byte(t)); return h[:] }
 // ErrBadLogin is returned for any login failure.
 var ErrBadLogin = errors.New("wrong login or password")
 
-// Login checks credentials and creates a session. It returns the session token.
-func (s *Service) Login(ctx context.Context, login, pw string) (string, error) {
+// Login checks credentials (and the one-time code, when the user has 2FA
+// on) and creates a session. It returns the session token.
+func (s *Service) Login(ctx context.Context, login, pw, code string) (string, error) {
 	var u *store.User
 	err := s.st.Read(ctx, func(tx *store.Tx) (err error) { u, err = tx.UserByLogin(login); return })
 	if err != nil {
@@ -99,6 +100,11 @@ func (s *Service) Login(ctx context.Context, login, pw string) (string, error) {
 	}
 	if !CheckPassword(u.PassHash, pw) {
 		return "", ErrBadLogin
+	}
+	if u.TOTP {
+		if err := s.checkSecondFactor(ctx, u.ID, code); err != nil {
+			return "", err
+		}
 	}
 	token := randomToken()
 	err = s.st.Tx(ctx, func(tx *store.Tx) error {
@@ -284,7 +290,11 @@ func (l *loginLimiter) allowed(addr string, now time.Time) bool {
 	if l.fail == nil {
 		l.fail = map[string][]time.Time{}
 	}
-	l.fail[addr] = recent
+	if len(recent) == 0 {
+		delete(l.fail, addr) // do not keep every address that ever asked
+	} else {
+		l.fail[addr] = recent
+	}
 	return len(recent) < 10
 }
 

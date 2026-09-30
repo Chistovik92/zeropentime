@@ -6,6 +6,7 @@
   <form method="post" action="/login" class="stack">
     <label>Логин <input name="login" autocomplete="username" required autofocus></label>
     <label>Пароль <input name="password" type="password" autocomplete="current-password" required></label>
+    <label>Код 2FA <span class="muted">(если включён)</span> <input name="code" inputmode="numeric" autocomplete="one-time-code"></label>
     <button>Войти</button>
   </form>
 </section>
